@@ -4,10 +4,9 @@ const PORT = process.env.PORT || 3000;
 const express = require("express");
 const routes = require("./api/routes");
 const cors = require("cors");
-app.use(cors());
 const app = express();
 app.use(express.json());
-
+app.use(cors());
 app.use("/api", routes);
 
 app.get("/health", (req, res) => {
