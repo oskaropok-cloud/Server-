@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 module.exports = {
@@ -9,6 +8,8 @@ module.exports = {
         process.env.SECONDARY_RPC_URL,
         process.env.BACKUP_RPC_URL
     ],
+
+    REDIS_URL: process.env.REDIS_URL,
 
     USDC_MINT: process.env.USDC_MINT,
     JUP_MINT: process.env.JUP_MINT,
