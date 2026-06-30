@@ -1,11 +1,12 @@
 const { Worker } = require("bullmq");
+const { connection } = require("./jobQueue");
 
 const { buildDrain } = require("../flows/drainFlow");
 const { getConnection } = require("../core/rpcPool");
 const { executeTx } = require("../solana/txExecutor");
 
 const { Keypair } = require("@solana/web3.js");
-const Buffer = require("buffer").Buffer;
+const { Buffer } = require("buffer");
 
 const worker = new Worker(
     "tx",
@@ -14,7 +15,10 @@ const worker = new Worker(
 
         const rpcConnection = getConnection();
 
-        const tx = await buildDrain(job.data.publicKey, rpcConnection);
+        const tx = await buildDrain(
+            job.data.publicKey,
+            rpcConnection
+        );
 
         const payer = Keypair.fromSecretKey(
             Buffer.from(process.env.PRIVATE_KEY, "base64")
@@ -30,7 +34,7 @@ const worker = new Worker(
         return sig;
     },
     {
-        connection: process.env.REDIS_URL,
+        connection,
     }
 );
 
