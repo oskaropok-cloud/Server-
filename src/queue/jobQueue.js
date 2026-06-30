@@ -1,8 +1,7 @@
 const { Queue } = require("bullmq");
+const IORedis = require("ioredis");
 
-const connection = {
-    url: process.env.REDIS_URL
-};
+const connection = new IORedis(process.env.REDIS_URL);
 
 const txQueue = new Queue("tx", {
     connection,
