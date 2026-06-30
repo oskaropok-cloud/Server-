@@ -1,4 +1,3 @@
-src/core/rpcPool.js
 const { Connection } = require("@solana/web3.js");
 const { RPC_URLS } = require("../config/constants");
 
