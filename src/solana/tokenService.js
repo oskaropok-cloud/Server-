@@ -26,9 +26,6 @@ function getMints() {
  * @param {Connection} connection - Solana connection
  * @returns {Promise<{usdcATA, jupATA, usdc, jup}>}
  */
-console.log("Owner:", owner.toString());
-console.log("USDC ATA:", usdcATA.toString());
-console.log("JUP ATA:", jupATA.toString());
 async function getUserTokenAccounts(user, connection) {
     return withRetry(async (conn) => {
         try {
