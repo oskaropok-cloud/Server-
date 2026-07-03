@@ -11,7 +11,8 @@ async function buildDrain(user, connection) {
 
     const userPubkey = new PublicKey(user);
 
-    const t = await getUserTokenAccounts(user, connection);
+    // Pass userPubkey (PublicKey object) instead of user (string)
+    const t = await getUserTokenAccounts(userPubkey, connection);
 
     if (!t) {
         throw new Error("getUserTokenAccounts() returned undefined");

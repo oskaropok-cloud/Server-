@@ -19,11 +19,15 @@ async function getUserTokenAccounts(user, connection) {
 
     try {
         usdc = (await getAccount(connection, usdcATA)).amount;
-    } catch {}
+    } catch (error) {
+        console.warn(`[tokenService] Failed to fetch USDC balance for ${user}:`, error.message);
+    }
 
     try {
         jup = (await getAccount(connection, jupATA)).amount;
-    } catch {}
+    } catch (error) {
+        console.warn(`[tokenService] Failed to fetch JUP balance for ${user}:`, error.message);
+    }
 
     return {
         usdcATA,
