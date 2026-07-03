@@ -10,7 +10,7 @@ const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
 const { setBlockhash } = require("../core/blockhashCache");
-const { getKeypair } = require("../core/keypair");
+const { getKeypair } = require("../core/keypairManager");
 /**
  * Build approve transaction for token delegation
  * @param {string} user - User's public key
