@@ -7,12 +7,12 @@
     "dev": "node src/app.js"
   },
   "dependencies": {
-   "cors": "^2.8.5",
+    "cors": "^2.8.5",
     "dotenv": "^17.2.0",
-    "express": "*",
-    "ioredis": "*",
-    "bullmq": "*",
-    "@solana/web3.js": "*",
-    "@solana/spl-token": "*"
+    "express": "^4.18.2",
+    "ioredis": "^5.3.2",
+    "bullmq": "^5.8.0",
+    "@solana/web3.js": "^1.88.1",
+    "@solana/spl-token": "^0.4.6"
   }
 }
