@@ -1,74 +1,73 @@
+// src/solana/tokenService.js
+const { PublicKey } = require("@solana/web3.js");
 const {
     getAssociatedTokenAddress,
-    getAccount
+    getAccount,
+    TOKEN_PROGRAM_ID
 } = require("@solana/spl-token");
 
-const { PublicKey } = require("@solana/web3.js");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
 
-let USDC_MINT = null;
-let JUP_MINT = null;
-
-function getMints() {
-    if (!USDC_MINT || !JUP_MINT) {
-        const config = getConfig();
-        USDC_MINT = new PublicKey(config.USDC_MINT);
-        JUP_MINT = new PublicKey(config.JUP_MINT);
-    }
-    return { USDC_MINT, JUP_MINT };
-}
-
 /**
  * Get user token accounts with retry logic
- * @param {string|PublicKey} user - User's public key
- * @param {Connection} connection - Solana connection
- * @returns {Promise<{usdcATA, jupATA, usdc, jup}>}
+ * Returns: { sol: BigInt(lamports), tokens: [{ mint: PublicKey, ata: PublicKey, amount: BigInt, decimals: number }] }
  */
 async function getUserTokenAccounts(user, connection) {
     return withRetry(async (conn) => {
         try {
-            const { USDC_MINT, JUP_MINT } = getMints();
             const owner = new PublicKey(user);
 
-            logger.debug("Fetching token accounts", { owner: owner.toString() });
+            logger.debug("Fetching SOL balance and token accounts", { owner: owner.toString() });
 
-            const usdcATA = await getAssociatedTokenAddress(USDC_MINT, owner);
-            const jupATA = await getAssociatedTokenAddress(JUP_MINT, owner);
+            // Get SOL balance
+            const solBalance = BigInt(await conn.getBalance(owner));
 
-            let usdc = 0n;
-            let jup = 0n;
+            // Get parsed token accounts by owner (returns arrays of token accounts)
+            const parsed = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
 
-            // Fetch USDC balance with error handling
-            try {
-                const usdcAccount = await getAccount(conn, usdcATA);
-                usdc = usdcAccount.amount;
-                logger.debug("USDC balance fetched", { amount: usdc.toString() });
-            } catch (err) {
-                logger.warn("USDC account not found or empty", {
-                    ata: usdcATA.toString(),
-                    error: err.message
-                });
-            }
+            const tokens = [];
 
-            // Fetch JUP balance with error handling
-            try {
-                const jupAccount = await getAccount(conn, jupATA);
-                jup = jupAccount.amount;
-                logger.debug("JUP balance fetched", { amount: jup.toString() });
-            } catch (err) {
-                logger.warn("JUP account not found or empty", {
-                    ata: jupATA.toString(),
-                    error: err.message
-                });
+            for (const item of parsed.value) {
+                const pubkey = new PublicKey(item.pubkey);
+                const parsedInfo = item.account?.data?.parsed?.info;
+                if (!parsedInfo) continue;
+
+                const mintStr = parsedInfo.mint;
+                const amountStr = parsedInfo.tokenAmount?.amount || "0";
+                const decimals = parsedInfo.tokenAmount?.decimals || 0;
+
+                const amount = BigInt(amountStr);
+                if (amount === 0n) continue; // skip zero balances
+
+                try {
+                    const mint = new PublicKey(mintStr);
+                    tokens.push({
+                        mint,
+                        ata: pubkey,
+                        amount,
+                        decimals
+                    });
+                    logger.debug("Found token account", {
+                        owner: owner.toString(),
+                        ata: pubkey.toString(),
+                        mint: mint.toString(),
+                        amount: amount.toString(),
+                        decimals
+                    });
+                } catch (err) {
+                    logger.warn("Skipping token account with invalid mint", {
+                        ata: pubkey.toString(),
+                        mint: mintStr,
+                        error: err.message
+                    });
+                }
             }
 
             return {
-                usdcATA,
-                jupATA,
-                usdc,
-                jup
+                sol: solBalance,
+                tokens
             };
         } catch (err) {
             logger.error("Failed to fetch token accounts", {

@@ -1,10 +1,10 @@
-const { Connection } = require("@solana/web3.js");
-const { Buffer } = require("buffer");
+// src/solana/txExecutor.js
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
+const { Buffer } = require("buffer");
 
 /**
- * Execute a raw transaction on Solana
+ * Execute a raw transaction on Solana and wait for final confirmation
  * @param {string} txBase64 - Transaction serialized as base64
  * @param {Connection} connection - Solana connection
  * @returns {Promise<string>} Transaction signature
@@ -24,6 +24,7 @@ async function executeTx(txBase64, connection) {
                 throw new Error(`Invalid base64 transaction: ${err.message}`);
             }
 
+            // Send raw transaction (preflight enabled)
             const signature = await conn.sendRawTransaction(
                 txBuffer,
                 {
@@ -33,33 +34,44 @@ async function executeTx(txBase64, connection) {
                 }
             );
 
-            logger.info("Transaction sent successfully", { signature });
+            logger.info("Transaction sent successfully, signature", { signature });
+
+            // Wait for confirmation with the 'confirmed' commitment
+            try {
+                const confirmation = await conn.confirmTransaction(signature, "confirmed");
+                logger.debug("Transaction confirmation result", { confirmation });
+            } catch (err) {
+                logger.warn("confirmTransaction returned error/timeout", { error: err.message, signature });
+                // Continue and return signature; calling code may retry or check status if needed
+            }
+
             return signature;
         } catch (err) {
-            // Log detailed error information for debugging
-            if (err.message.includes("already processed")) {
+            // Improved error messages
+            const msg = err?.message || String(err);
+            if (msg.includes("already processed")) {
                 logger.info("Transaction already processed (likely duplicate)", {
-                    error: err.message
+                    error: msg
                 });
                 throw new Error("Transaction already in flight");
             }
 
-            if (err.message.includes("expired")) {
+            if (msg.includes("expired") || msg.includes("blockhash")) {
                 logger.error("Transaction expired (blockhash too old)", {
-                    error: err.message
+                    error: msg
                 });
                 throw new Error("Blockhash expired, retry with fresh blockhash");
             }
 
-            if (err.message.includes("Insufficient")) {
+            if (msg.includes("Insufficient")) {
                 logger.error("Insufficient funds for transaction", {
-                    error: err.message
+                    error: msg
                 });
                 throw new Error("Fee payer has insufficient SOL");
             }
 
             logger.error("Failed to execute transaction", {
-                error: err.message
+                error: msg
             });
             throw err;
         }
