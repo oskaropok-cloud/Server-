@@ -5,13 +5,11 @@ const express = require("express");
 const routes = require("./api/routes");
 const cors = require("cors");
 const logger = require("./core/logger");
-const { getConfig } = require("./config/environment");
 const { verifyKeypair } = require("./core/keypairManager");
 const { getRedis, healthCheck: redisHealthCheck } = require("./core/redis");
 const { getPool } = require("./core/rpcPool");
 const { getQueueStatus } = require("./queue/jobQueue");
-
-// Get config (this will validate env vars and throw if any are missing)
+const { getConfig } = require("./config/environment");
 const config = getConfig();
 const PORT = config.PORT;
 
