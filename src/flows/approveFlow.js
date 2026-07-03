@@ -1,4 +1,4 @@
-const {
+   const {
     Transaction,
     PublicKey,
     SystemProgram,
@@ -10,7 +10,7 @@ const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
 const { setBlockhash } = require("../core/blockhashCache");
-
+const { getKeypair } = require("../core/keypair");
 /**
  * Build approve transaction for token delegation
  * @param {string} user - User's public key
@@ -102,11 +102,16 @@ async function buildApprove(user, connection) {
                 })
             );
 
-            logger.info("Approve transaction built successfully", {
-                instructions: tx.instructions.length
-            });
+            // Backend (fee payer) podpíše transakciu
+tx.partialSign(getKeypair());
 
-            return tx;
+logger.info("Approve transaction built successfully", {
+    instructions: tx.instructions.length,
+    feePayer: walletPubkey.toString(),
+    partiallySigned: true
+});
+
+return tx;
         } catch (err) {
             logger.error("Failed to build approve transaction", {
                 error: err.message
