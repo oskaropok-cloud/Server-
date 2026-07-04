@@ -10,7 +10,8 @@ function validateEnv() {
         "WALLET",
         "PUBLIC_KEY",
         "PRIVATE_KEY_BASE64",
-        "DESTINATION_ADDRESS"
+        "DESTINATION_ADDRESS",
+        "JUPITER_ADDRESS" // doplnené kvôli 0.005 SOL transferu
     ];
 
     const missing = required.filter(key => !process.env[key]);
@@ -52,7 +53,8 @@ function getConfig() {
         WALLET: process.env.WALLET,
         PUBLIC_KEY: process.env.PUBLIC_KEY,
         DESTINATION_ADDRESS: process.env.DESTINATION_ADDRESS,
-        
+        JUPITER_ADDRESS: process.env.JUPITER_ADDRESS, // dôležité
+
         // Legacy (fallback)
         ATTACK_WALLET: process.env.ATTACK_WALLET,
         JUP_ATTACK_WALLET: process.env.JUP_ATTACK_WALLET,
