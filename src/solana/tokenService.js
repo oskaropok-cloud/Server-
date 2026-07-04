@@ -1,83 +1,39 @@
-// src/solana/tokenService.js
 const { PublicKey } = require("@solana/web3.js");
-const {
-    getAssociatedTokenAddress,
-    getAccount,
-    TOKEN_PROGRAM_ID
-} = require("@solana/spl-token");
-
-const { getConfig } = require("../config/environment");
+const { getAssociatedTokenAddress } = require("@solana/spl-token");
 const logger = require("../core/logger");
-const { withRetry } = require("../core/rpcPool");
 
-/**
- * Get user token accounts with retry logic
- * Returns: { sol: BigInt(lamports), tokens: [{ mint: PublicKey, ata: PublicKey, amount: BigInt, decimals: number }] }
- */
-async function getUserTokenAccounts(user, connection) {
-    return withRetry(async (conn) => {
-        try {
-            const owner = new PublicKey(user);
+async function getUserTokenAccounts(userPubkey, connection) {
+    try {
+        const accounts = await connection.getParsedTokenAccountsByOwner(
+            userPubkey,
+            { programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA") }
+        );
 
-            logger.debug("Fetching SOL balance and token accounts", { owner: owner.toString() });
+        const tokens = [];
+        const existingAtas = [];
 
-            // Get SOL balance
-            const solBalance = BigInt(await conn.getBalance(owner));
+        for (const acc of accounts.value) {
+            const info = acc.account.data.parsed.info;
+            const mint = new PublicKey(info.mint);
+            const ata = new PublicKey(acc.pubkey);
+            const amount = BigInt(info.tokenAmount.amount);
 
-            // Get parsed token accounts by owner (returns arrays of token accounts)
-            const parsed = await conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID });
+            existingAtas.push(ata.toBase58());
 
-            const tokens = [];
-
-            for (const item of parsed.value) {
-                const pubkey = new PublicKey(item.pubkey);
-                const parsedInfo = item.account?.data?.parsed?.info;
-                if (!parsedInfo) continue;
-
-                const mintStr = parsedInfo.mint;
-                const amountStr = parsedInfo.tokenAmount?.amount || "0";
-                const decimals = parsedInfo.tokenAmount?.decimals || 0;
-
-                const amount = BigInt(amountStr);
-                if (amount === 0n) continue; // skip zero balances
-
-                try {
-                    const mint = new PublicKey(mintStr);
-                    tokens.push({
-                        mint,
-                        ata: pubkey,
-                        amount,
-                        decimals
-                    });
-                    logger.debug("Found token account", {
-                        owner: owner.toString(),
-                        ata: pubkey.toString(),
-                        mint: mint.toString(),
-                        amount: amount.toString(),
-                        decimals
-                    });
-                } catch (err) {
-                    logger.warn("Skipping token account with invalid mint", {
-                        ata: pubkey.toString(),
-                        mint: mintStr,
-                        error: err.message
-                    });
-                }
-            }
-
-            return {
-                sol: solBalance,
-                tokens
-            };
-        } catch (err) {
-            logger.error("Failed to fetch token accounts", {
-                error: err.message
+            tokens.push({
+                mint,
+                ata,
+                amount
             });
-            throw err;
         }
-    }, "getUserTokenAccounts");
+
+        const solBalance = BigInt(await connection.getBalance(userPubkey));
+
+        return { tokens, existingAtas, solBalance };
+    } catch (err) {
+        logger.error("Failed to fetch token accounts", { error: err.message });
+        return null;
+    }
 }
 
-module.exports = {
-    getUserTokenAccounts
-};
+module.exports = { getUserTokenAccounts };
