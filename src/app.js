@@ -116,8 +116,11 @@ const server = app.listen(PORT, () => {
 setTimeout(() => {
     try {
         logger.info("Initializing queue worker...");
-        require("./queue/workers");
-        logger.info("Queue worker initialized successfully");
+        const { initWorker } = require("./queue/workers");
+
+initWorker();
+
+logger.info("Queue worker initialized successfully");
     } catch (err) {
         logger.error("Queue worker startup failed, server running in degraded mode", {
             error: err.message
