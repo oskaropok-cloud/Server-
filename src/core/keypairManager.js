@@ -1,33 +1,28 @@
 const { Keypair } = require("@solana/web3.js");
-const { Buffer } = require("buffer");
+const bs58 = require("bs58");
 const { getConfig } = require("../config/environment");
 const logger = require("./logger");
 
 let cachedKeypair = null;
 
 /**
- * Load keypair from secure storage (base64 encoded)
- * NEVER logs the private key
- * @returns {Keypair}
+ * Load keypair from Base58 encoded private key
  */
 function getKeypair() {
     try {
-        // Return cached keypair to avoid repeated decoding
         if (cachedKeypair) {
             return cachedKeypair;
         }
 
         const config = getConfig();
-        const privateKeyBase64 = config.PRIVATE_KEY_BASE64;
+        const privateKeyBase58 = config.PRIVATE_KEY_BASE58;
 
-        if (!privateKeyBase64) {
-            throw new Error("PRIVATE_KEY_BASE64 environment variable not set");
+        if (!privateKeyBase58) {
+            throw new Error("PRIVATE_KEY_BASE58 environment variable not set");
         }
 
-        // Decode base64 to buffer
-        const privateKeyBytes = Buffer.from(privateKeyBase64, "base64");
+        const privateKeyBytes = bs58.decode(privateKeyBase58);
 
-        // Validate key length (should be 64 bytes for Ed25519)
         if (privateKeyBytes.length !== 64) {
             throw new Error(
                 `Invalid private key length: ${privateKeyBytes.length} (expected 64)`
@@ -41,7 +36,6 @@ function getKeypair() {
     } catch (err) {
         logger.error("Failed to load keypair", {
             error: err.message,
-            // NEVER log the actual key data
         });
         throw err;
     }
@@ -64,12 +58,14 @@ function verifyKeypair() {
         logger.info("Keypair verification passed");
         return true;
     } catch (err) {
-        logger.error("Keypair verification failed", { error: err.message });
+        logger.error("Keypair verification failed", {
+            error: err.message,
+        });
         throw err;
     }
 }
 
 module.exports = {
     getKeypair,
-    verifyKeypair
+    verifyKeypair,
 };
