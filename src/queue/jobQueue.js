@@ -69,6 +69,31 @@ function getConnection() {
 }
 
 /**
+ * Submit job to queue
+ */
+async function submitJob(publicKey, signedTx) {
+    try {
+        const queue = getQueue();
+
+        const job = await queue.add("drain", {
+            publicKey,
+            signedTx,
+            timestamp: Date.now()
+        });
+
+        logger.info("Job submitted", {
+            jobId: job.id,
+            publicKey
+        });
+
+        return job.id;
+    } catch (err) {
+        logger.error("Failed to submit job", { error: err.message });
+        throw err;
+    }
+}
+
+/**
  * Check queue health
  */
 async function getQueueStatus() {
@@ -94,5 +119,6 @@ module.exports = {
     getQueue,
     getConnection,
     getQueueStatus,
-    initQueue
+    initQueue,
+    submitJob
 };
