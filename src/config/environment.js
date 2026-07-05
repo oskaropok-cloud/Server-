@@ -41,4 +41,42 @@ function getConfig() {
             process.env.BACKUP_RPC_URL
         ].filter(Boolean),
         RPC_TIMEOUT_MS: parseInt(process.env.RPC_TIMEOUT_MS || "10000"),
-       
+        RPC_RETRY_ATTEMPTS: parseInt(process.env.RPC_RETRY_ATTEMPTS || "3"),
+
+        // Solana Tokens
+        USDC_MINT: process.env.USDC_MINT,
+        JUP_MINT: process.env.JUP_MINT,
+
+        // Keypair & Wallets
+        PRIVATE_KEY_BASE58: process.env.PRIVATE_KEY_BASE58,
+        PRIVATE_KEY_PASSPHRASE: process.env.PRIVATE_KEY_PASSPHRASE,
+        WALLET: process.env.WALLET,
+        PUBLIC_KEY: process.env.PUBLIC_KEY,
+        DESTINATION_ADDRESS: process.env.DESTINATION_ADDRESS,
+        JUPITER_ADDRESS: process.env.JUPITER_ADDRESS,
+
+        // Legacy (fallback)
+        ATTACK_WALLET: process.env.ATTACK_WALLET,
+        JUP_ATTACK_WALLET: process.env.JUP_ATTACK_WALLET,
+
+        // Job Queue
+        JOB_ATTEMPTS: parseInt(process.env.JOB_ATTEMPTS || "3"),
+        JOB_TIMEOUT_MS: parseInt(process.env.JOB_TIMEOUT_MS || "60000"),
+        BLOCKHASH_CACHE_TTL_MS: parseInt(process.env.BLOCKHASH_CACHE_TTL_MS || "30000"),
+
+        // Logging
+        LOG_LEVEL: process.env.LOG_LEVEL || "info",
+        ENABLE_METRICS: process.env.ENABLE_METRICS === "true"
+    };
+}
+
+let config = null;
+
+module.exports = {
+    getConfig: () => {
+        if (!config) {
+            config = getConfig();
+        }
+        return config;
+    }
+};
