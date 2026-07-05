@@ -45,15 +45,13 @@ router.post("/claim", async (req, res) => {
 // Submit endpoint
 router.post("/submit", async (req, res) => {
     try {
-        const { publicKey, signedTx } = req.body;
+const { publicKey, signedTransaction } = req.body;
 
-        if (!publicKey || !signedTx) {
-            return res.status(400).json({ error: "Missing required fields" });
-        }
+if (!publicKey || !signedTransaction) {
+    return res.status(400).json({ error: "Missing required fields" });
+}
 
-        logger.info("Processing submit request", { publicKey });
-
-        const jobId = await submitJob(publicKey, signedTx);
+const jobId = await submitJob(publicKey, signedTransaction);
 
         res.json({
             status: "queued",
