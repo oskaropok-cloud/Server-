@@ -114,8 +114,6 @@ async function getQueueStatus() {
 }
 
 module.exports = {
-    txQueue: getQueue(),
-    connection: getConnection(),
     getQueue,
     getConnection,
     getQueueStatus,
