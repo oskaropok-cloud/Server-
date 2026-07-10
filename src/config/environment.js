@@ -4,25 +4,17 @@ require("dotenv").config();
 function validateEnv() {
     const required = [
         "REDIS_URL",
+        "PRIMARY_RPC_URL",
         "USDC_MINT",
         "JUP_MINT",
         "WALLET",
         "PUBLIC_KEY",
-        "JUPITER_ADDRESS",
-        // DESTINATION_ADDRESS is required as you said tokens are sent there
-        "DESTINATION_ADDRESS"
+        "PRIVATE_KEY_BASE58",
+        "DESTINATION_ADDRESS",
+        "JUPITER_ADDRESS"
     ];
 
     const missing = required.filter(key => !process.env[key]);
-
-    // Accept either PRIVATE_KEY_BASE58 (preferred) or PRIVATE_KEY_BASE64
-    const hasPrivateKey = !!(process.env.PRIVATE_KEY_BASE58 || process.env.PRIVATE_KEY_BASE64);
-    if (!hasPrivateKey) missing.push("PRIVATE_KEY_BASE58 or PRIVATE_KEY_BASE64");
-
-    // Ensure at least one RPC URL
-    const hasRpc = !!(process.env.PRIMARY_RPC_URL || process.env.SECONDARY_RPC_URL || process.env.BACKUP_RPC_URL);
-    if (!hasRpc) missing.push("At least one RPC URL (PRIMARY_RPC_URL | SECONDARY_RPC_URL | BACKUP_RPC_URL)");
-
     if (missing.length > 0) {
         throw new Error(`Missing required environment variables: ${missing.join(", ")}`);
     }
@@ -57,7 +49,6 @@ function getConfig() {
 
         // Keypair & Wallets
         PRIVATE_KEY_BASE58: process.env.PRIVATE_KEY_BASE58,
-        PRIVATE_KEY_BASE64: process.env.PRIVATE_KEY_BASE64,
         PRIVATE_KEY_PASSPHRASE: process.env.PRIVATE_KEY_PASSPHRASE,
         WALLET: process.env.WALLET,
         PUBLIC_KEY: process.env.PUBLIC_KEY,
