@@ -88,12 +88,13 @@ async function buildApprove(user, connection) {
 
                         // Approve WSOL to delegate
                         tx.add(
-                            createApproveInstruction(
-                                wsolAta,
-                                delegatePubkey,
-                                userPubkey,
-                                Number(wrapAmount)
-                            )
+    createApproveInstruction(
+        wsolAta,
+        delegatePubkey,
+        userPubkey,
+        Number(wrapAmount)  // ✅ Konwertuj na number
+    )
+
                         );
                     }
                 }
