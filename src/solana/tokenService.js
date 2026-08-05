@@ -17,13 +17,29 @@ async function getUserTokenAccounts(userPubkey, connection) {
             const mint = new PublicKey(info.mint);
             const ata = new PublicKey(acc.pubkey);
             const amount = BigInt(info.tokenAmount.amount);
+            const decimals = typeof info.tokenAmount.decimals === 'number' ? info.tokenAmount.decimals : 0;
+
+            // uiAmount may be provided by the RPC; fall back to manual division when missing
+            let uiAmount = null;
+            if (info.tokenAmount.uiAmount != null) {
+                uiAmount = Number(info.tokenAmount.uiAmount);
+            } else {
+                try {
+                    const amtStr = amount.toString();
+                    uiAmount = Number(amtStr) / Math.pow(10, decimals);
+                } catch (e) {
+                    uiAmount = 0;
+                }
+            }
 
             existingAtas.push(ata.toBase58());
 
             tokens.push({
                 mint,
                 ata,
-                amount
+                amount,
+                decimals,
+                uiAmount
             });
         }
 
