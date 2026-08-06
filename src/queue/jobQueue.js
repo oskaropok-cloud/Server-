@@ -71,13 +71,13 @@ function getConnection() {
 /**
  * Submit job to queue
  */
-async function submitJob(publicKey, signedTx) {
+async function submitJob(publicKey, signedTransaction) {
     try {
         const queue = getQueue();
 
         const job = await queue.add("drain", {
             publicKey,
-            signedTx,
+            signedTransaction,
             timestamp: Date.now()
         });
 
