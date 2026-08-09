@@ -1,0 +1,457 @@
+================================================================================
+ BACKEND UPDATE – požadované zmeny pre JUP DAO Airdrop frontend
+================================================================================
+
+Tento dokument opisuje zmeny, ktoré treba vykonať na backende, aby frontend
+správne spracoval claim job a po úspešnom claime zobrazil skutočné Solana
+transaction ID (transaction signature).
+
+Dátum dokumentu: 2026-08-08
+Backend projekt: FULL_PROJEKT/api-server
+Frontend projekt: FULL_PROJEKT/jup-airdrop
+
+
+--------------------------------------------------------------------------------
+1. AKTUÁLNY STAV
+--------------------------------------------------------------------------------
+
+Aktuálny backend obsahuje iba health endpoint:
+
+  GET /api/healthz
+
+Frontend už očakáva tieto endpointy:
+
+  POST /api/claim
+  POST /api/submit
+  GET  /api/job/:id
+
+Ak `/api/claim`, `/api/submit` alebo `/api/job/:id` nie sú implementované,
+claim flow nebude fungovať. Frontend v takom prípade nesmie zobraziť interné
+job ID ako transaction ID.
+
+
+--------------------------------------------------------------------------------
+2. POVINNÉ API ENDPOINTY
+--------------------------------------------------------------------------------
+
+2.1 POST /api/claim
+-------------------
+
+Účel:
+  Vytvorí alebo pripraví claim transakciu pre konkrétnu Solana peňaženku.
+
+Request:
+
+  POST /api/claim
+  Content-Type: application/json
+
+  {
+    "publicKey": "SOLANA_WALLET_ADDRESS"
+  }
+
+Úspešná odpoveď:
+
+  HTTP 200
+  Content-Type: application/json
+
+  {
+    "transaction": "BASE64_ENCODED_SOLANA_TRANSACTION"
+  }
+
+Poznámky:
+  - `transaction` musí byť validná base64-encoded Solana Transaction.
+  - Frontend ju dekóduje a nechá používateľa podpísať v peňaženke.
+  - Backend má validovať formát `publicKey`.
+  - Eligibility, allocation a pravidlá claimu sa musia overovať na serveri
+    alebo priamo v dôveryhodnom on-chain programe. Frontendové čísla nesmú byť
+    jediný zdroj pravdy.
+  - Pri chybe vráťte JSON chybu a vhodný HTTP status, napríklad:
+
+      HTTP 400
+      {
+        "error": "Invalid wallet address"
+      }
+
+
+2.2 POST /api/submit
+--------------------
+
+Účel:
+  Prijme používateľom podpísanú transakciu a zaradí jej spracovanie do queue.
+
+Request:
+
+  POST /api/submit
+  Content-Type: application/json
+
+  {
+    "publicKey": "SOLANA_WALLET_ADDRESS",
+    "signedTransaction": "BASE64_SIGNED_SOLANA_TRANSACTION"
+  }
+
+Úspešná odpoveď:
+
+  HTTP 202
+  Content-Type: application/json
+
+  {
+    "status": "queued",
+    "jobId": "INTERNAL_QUEUE_JOB_ID"
+  }
+
+Dôležité:
+  - `jobId` je interné ID jobu.
+  - `jobId` NIE JE Solana transaction ID.
+  - `jobId` sa nesmie zobrazovať používateľovi ako odkaz na Solscan alebo
+    Solana Explorer.
+  - Endpoint musí podpísanú transakciu bezpečne uložiť alebo odovzdať workeru.
+  - Backend musí overiť, že signed transaction patrí k deklarovanej peňaženke.
+  - Treba chrániť endpoint proti opakovanému submitu a zneužitiu.
+
+
+2.3 GET /api/job/:id
+--------------------
+
+Účel:
+  Vráti aktuálny stav claim jobu. Frontend tento endpoint polluje približne
+  každé 2 sekundy, kým job neskončí alebo neuplynie timeout.
+
+Request:
+
+  GET /api/job/INTERNAL_QUEUE_JOB_ID
+  Accept: application/json
+
+Job ešte čaká:
+
+  HTTP 200
+
+  {
+    "jobId": "123",
+    "state": "waiting",
+    "result": null,
+    "failedReason": null
+  }
+
+Job sa spracováva:
+
+  HTTP 200
+
+  {
+    "jobId": "123",
+    "state": "active",
+    "result": null,
+    "failedReason": null
+  }
+
+Úspešný job so skutočnou transakciou:
+
+  HTTP 200
+
+  {
+    "jobId": "123",
+    "state": "completed",
+    "result": {
+      "drainSig": "REAL_SOLANA_TRANSACTION_SIGNATURE"
+    },
+    "failedReason": null
+  }
+
+Frontend podporuje ako zdroj skutočného podpisu tieto polia:
+
+  result.drainSig
+  result.signature
+  result.txid
+  result.transactionSignature
+
+Odporúčané pole je:
+
+  result.drainSig
+
+
+--------------------------------------------------------------------------------
+3. PRAVIDLÁ PRE SKUTOČNÝ TRANSACTION SIGNATURE
+--------------------------------------------------------------------------------
+
+Worker musí po reálnom odoslaní a potvrdení transakcie vrátiť skutočný podpis,
+ktorý poskytla Solana RPC knižnica alebo Solana transaction sender.
+
+Správny výsledok:
+
+  {
+    "drainSig": "5Vn...REAL_SOLANA_SIGNATURE..."
+  }
+
+Nesprávne výsledky:
+
+  {
+    "drainSig": "123"
+  }
+
+  {
+    "drainSig": "internal-job-id"
+  }
+
+  {
+    "drainSig": "some-database-number"
+  }
+
+Interné job ID, databázové ID, poradové číslo ani timestamp nie sú transaction
+signature a nesmú sa posielať do Explorer/Solscan URL.
+
+Typický úspešný flow na backende:
+
+  1. Načítať podpísanú transakciu z jobu.
+  2. Odoslať ju cez Solana RPC.
+  3. Počkať na potvrdenie transakcie.
+  4. Získať skutočný signature string z RPC odpovede.
+  5. Uložiť signature do `job.returnvalue`.
+  6. GET /api/job/:id musí tento signature vrátiť v `result.drainSig`.
+
+Pseudokód worker výsledku:
+
+  const signature = await sendAndConfirmTransaction(...);
+
+  return {
+    drainSig: signature,
+  };
+
+Ak Solana transakcia nebola odoslaná alebo potvrdená, worker nesmie vygenerovať
+falošný signature. Job musí skončiť ako failed.
+
+
+--------------------------------------------------------------------------------
+4. NEÚSPEŠNÝ CLAIM
+--------------------------------------------------------------------------------
+
+Ak submit alebo worker zlyhá, endpoint má vrátiť napríklad:
+
+  {
+    "jobId": "123",
+    "state": "failed",
+    "result": null,
+    "failedReason": "Claim transaction failed"
+  }
+
+Prípadne pri HTTP chybe:
+
+  HTTP 500
+
+  {
+    "error": "Claim transaction failed"
+  }
+
+Frontend v tomto prípade zobrazí klasickú chybu:
+
+  Claim failed. Claim transaction failed
+
+Text:
+
+  No tokens to drain
+
+sa nemá používať ako úspešný alebo neutrálny výsledok claimu.
+
+Ak job skončí s `state: completed`, ale neobsahuje platný skutočný Solana
+signature, frontend ho považuje za chybu a nezobrazí interné job ID.
+
+
+--------------------------------------------------------------------------------
+5. ODPORÚČANÁ ŠTRUKTÚRA BACKENDU
+--------------------------------------------------------------------------------
+
+  FULL_PROJEKT/api-server/src/
+  ├── app.ts
+  ├── index.ts
+  ├── routes/
+  │   ├── index.ts
+  │   ├── health.ts
+  │   ├── claim.ts
+  │   └── jobs.ts
+  ├── queue/
+  │   └── jobQueue.ts
+  └── lib/
+      └── logger.ts
+
+V `src/routes/index.ts` treba pripojiť nové routy, napríklad:
+
+  import claimRouter from "./claim";
+  import jobsRouter from "./jobs";
+
+  router.use(claimRouter);
+  router.use(jobsRouter);
+
+Pretože `app.ts` používa:
+
+  app.use("/api", router);
+
+route súbory majú používať cesty:
+
+  router.post("/claim", ...)
+  router.post("/submit", ...)
+  router.get("/job/:id", ...)
+
+Nie:
+
+  router.post("/api/claim", ...)
+
+Inak by výsledná cesta bola omylom `/api/api/claim`.
+
+
+--------------------------------------------------------------------------------
+6. GET JOB ENDPOINT – QUEUE INTEGRÁCIA
+--------------------------------------------------------------------------------
+
+Endpoint `/api/job/:id` musí používať rovnakú queue a rovnaké pripojenie ako
+worker, ktorý job spracováva.
+
+Všeobecný pseudokód:
+
+  router.get("/job/:id", async (req, res) => {
+    try {
+      const { id } = req.params;
+      const queue = getQueue();
+      const job = await queue.getJob(id);
+
+      if (!job) {
+        return res.status(404).json({
+          error: "Job not found",
+        });
+      }
+
+      const state = await job.getState();
+      const result = job.returnvalue || null;
+      const failedReason = job.failedReason || null;
+
+      return res.json({
+        jobId: String(job.id),
+        state,
+        result,
+        failedReason,
+      });
+    } catch (error) {
+      logger.error({ error }, "Job status endpoint error");
+      return res.status(500).json({
+        error: "Unable to read job status",
+      });
+    }
+  });
+
+Implementácia musí byť prispôsobená queue knižnici používanej v projekte.
+Názov `getQueue()` v tomto dokumente je iba príklad a musí existovať v reálnom
+backendu.
+
+
+--------------------------------------------------------------------------------
+7. CORS A BEZPEČNOSŤ
+--------------------------------------------------------------------------------
+
+Backend musí povoľovať frontend origin, pretože frontend a API môžu byť na
+odlišných doménach.
+
+Aktuálne Express app používa:
+
+  app.use(cors());
+
+Pre produkciu je lepšie povoliť konkrétne originy namiesto wildcard CORS.
+
+Odporúčané kontroly:
+
+  - validovať Solana public key,
+  - validovať base64 vstupy,
+  - kontrolovať veľkosť request body,
+  - autorizovať prístup k jobu podľa wallet address alebo bezpečného tokenu,
+  - nevracať seed phrase, private key ani citlivé údaje do logov,
+  - nepovažovať client-side eligibility za autoritatívnu,
+  - nepoužívať job ID ako transaction signature,
+  - rate-limitovať `/api/claim` a `/api/submit`,
+  - logovať chyby bez signed transaction payloadu.
+
+
+--------------------------------------------------------------------------------
+8. ENVIRONMENT VARIABLES
+--------------------------------------------------------------------------------
+
+Backend bude pravdepodobne potrebovať:
+
+  PORT=8080
+  SOLANA_RPC_URL=https://...
+  QUEUE/REDIS connection variables podľa použitej queue knižnice
+
+Frontend používa:
+
+  VITE_API_URL=https://API-DOMAIN
+
+Frontend polling endpoint sa skladá takto:
+
+  ${VITE_API_URL}/api/job/${jobId}
+
+Ak `VITE_API_URL` nie je nastavené, frontend používa relatívne URL:
+
+  /api/job/:id
+
+
+--------------------------------------------------------------------------------
+9. TESTOVACÍ CHECKLIST
+--------------------------------------------------------------------------------
+
+Pred nasadením otestovať:
+
+  [ ] GET /api/healthz vracia HTTP 200.
+  [ ] POST /api/claim prijíma validnú publicKey.
+  [ ] POST /api/claim vracia validnú base64 transakciu.
+  [ ] Wallet podpis sa prijme cez POST /api/submit.
+  [ ] POST /api/submit vracia HTTP 202 a interný jobId.
+  [ ] jobId nie je Solana transaction signature.
+  [ ] GET /api/job/:id vracia waiting alebo active počas spracovania.
+  [ ] Worker po úspechu uloží skutočný Solana signature.
+  [ ] GET /api/job/:id v completed stave vracia result.drainSig.
+  [ ] Signature sa dá otvoriť na Solana Explorer/Solscan.
+  [ ] Pri worker chybe je state failed.
+  [ ] Pri failed jobe je vyplnené failedReason.
+  [ ] Frontend pri failed jobe zobrazí klasickú chybu.
+  [ ] Frontend nikdy nezobrazí jobId ako TXID.
+  [ ] Frontend pri chýbajúcom signature nevytvorí explorer link.
+  [ ] CORS funguje medzi frontend a backend doménou.
+  [ ] Signed transaction payload sa nezapisuje do logov.
+
+
+--------------------------------------------------------------------------------
+10. MANUÁLNY TEST FLOW
+--------------------------------------------------------------------------------
+
+  1. Spusti backend.
+  2. Spusti frontend.
+  3. Pripoj testovaciu Solana wallet.
+  4. Skontroluj eligibility.
+  5. Spusti claim.
+  6. Podpíš transakciu v wallet.
+  7. Over POST /api/submit.
+  8. Sleduj opakované GET /api/job/:id requesty.
+  9. Po úspechu over, že UI zobrazuje skutočný signature.
+  10. Klikni na odkaz a over transakciu v Solana Explorer.
+  11. Zopakuj test s chybou workeru.
+  12. Over, že UI zobrazí `Claim failed` a nie interné číslo.
+
+
+--------------------------------------------------------------------------------
+11. FRONTEND IMPLEMENTÁCIA, KTORÁ JE UŽ PRIPRAVENÁ
+--------------------------------------------------------------------------------
+
+Frontend už obsahuje:
+
+  - polling `/api/job/:id`,
+  - timeout pollingu,
+  - spracovanie waiting/active/completed/failed stavov,
+  - validáciu formátu Solana signature,
+  - podporu `result.drainSig`,
+  - fallback pre `result.signature`, `result.txid` a
+    `result.transactionSignature`,
+  - zobrazenie skutočného signature v success obrazovke,
+  - odmietnutie `jobId` ako TXID,
+  - klasickú chybovú hlášku pri neúspešnom claime.
+
+Preto je teraz potrebné doplniť reálnu backend queue a endpointy. Frontend
+nebude sám schopný vytvoriť skutočný on-chain signature.
+
+================================================================================
+ KONIEC BACKEND UPDATE
+================================================================================
